@@ -1,10 +1,17 @@
 import torch
+from collections.abc import Sequence
 from pathlib import Path
 import logging
 
 logger = logging.getLogger(__name__)
 
 class MixedPoissonGaussianNoise:
+    # Models the sensor in absolute counts (Poisson variance == mean), so the
+    # count magnitude is a parameter, not just a scale: it needs the exact
+    # uint16 values rather than a bfloat16 approximation of them. The
+    # preprocessor keeps an fp32 intermediate when any transform sets this.
+    reads_raw_counts = True
+
     def __init__(
         self, 
         quantum_efficiency: float | tuple[float, float], 
@@ -13,24 +20,36 @@ class MixedPoissonGaussianNoise:
         mean_background_offset: int| tuple[int, int] | float | tuple[float, float],
         seed: int | None = None,
         *,
+        photon_scale: float | tuple[float, float] = 1.0,
         visualization_dir: str | None = None,
     ):
         """
         Adds realistic mixed Poisson-Gaussian noise to the input data.
-        
-        Assumes that the input data is expressed as incident photons (counts).
-        
+
+        UNITS CONTRACT: the INPUT is interpreted as incident
+        PHOTONS; the OUTPUT is camera COUNTS. The pipeline applies a
+        deterministic sensor gain on top of the stochastic terms:
+
+            E[output] ~= (quantum_efficiency / electrons_per_count) * photons
+                         + mean_background_offset
+
+        (with the shipped task config, ~3.73x + 100). A clean target snapshotted
+        BEFORE this transform therefore lives in the PHOTON domain while the
+        noised output lives in the COUNT domain -- see the denoising
+        preprocessor yaml for the deliberate training contract built on this.
+
         Args:
             quantum_efficiency: float or tuple[float, float] representing quantum efficiency of the camera
             electrons_per_count: float or tuple[float, float] representing the conversion factor from electrons to counts
             sigma_background_noise: float or tuple[float, float] representing read noise from the camera in counts
             mean_background_offset: float or tuple[float, float] representing the camera background offset in counts
+            photon_scale: multiplies the incident photons before the sensor (an exposure / brightness factor). It sets
+                the signal-to-noise ratio: shot-noise-limited SNR scales with sqrt(photon_scale). A tuple samples a
+                factor per batch element (SNR augmentation).
 
         If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
 
-        Takes clean images in counts and applies realistic sensor noise model:
-                
-        sensor pipeline with noise (to generate noisy counts):
+        Sensor pipeline (photons in -> noisy counts out):
         1. Convert photons → electrons using quantum_efficiency
         2. Add shot noise (Poisson) in electron space
         3. Add dark/read noise (Gaussian) in electron space
@@ -55,6 +74,13 @@ class MixedPoissonGaussianNoise:
             raise ValueError("mean_background_offset must be a float or tuple of two floats")
         
 
+        # Hydra hands a yaml range over as an omegaconf ListConfig (a Sequence, not a list)
+        if not isinstance(photon_scale, (float, int)):
+            photon_scale = tuple(float(v) for v in photon_scale) if isinstance(photon_scale, Sequence) else photon_scale
+        if not isinstance(photon_scale, (float, int)) and not (isinstance(photon_scale, tuple) and len(photon_scale) == 2):
+            raise ValueError("photon_scale must be a float or tuple of two floats")
+
+        self.photon_scale = photon_scale
         self.quantum_efficiency = quantum_efficiency
         self.electrons_per_count = electrons_per_count
         self.sigma_background_noise = sigma_background_noise
@@ -71,7 +97,17 @@ class MixedPoissonGaussianNoise:
         if device not in self._generators:
             gen = torch.Generator(device=device)
             if self.seed is not None:
-                gen.manual_seed(self.seed)
+                # Fold the rank in: a bare shared ${seed} gives every rank the
+                # SAME noise stream (step-for-step correlated augmentation
+                # across DDP replicas). Lazy import: transforms are built
+                # inside Ray workers where the distributed context exists;
+                # outside one (unit tests) rank falls back to 0.
+                try:
+                    from cell_observatory_platform.utils.context import process_rank
+                    rank = int(process_rank())
+                except Exception:
+                    rank = 0
+                gen.manual_seed(self.seed + rank)
             self._generators[device] = gen
         return self._generators[device]
 
@@ -93,8 +129,11 @@ class MixedPoissonGaussianNoise:
         # Save original dtype of image_batch
         original_dtype = image_batch.dtype
         
-        # Convert to float32 for numerical precision
-        image_batch = image_batch.to(dtype=torch.float32)
+        # Convert to float32 for numerical precision. copy=True is load-bearing:
+        # when the input is already float32, .to() would return the SAME tensor
+        # and the in-place ops below (*=, +=, /=) would mutate the caller's
+        # tensor (e.g. the clean denoising target / a reused buffer slot).
+        image_batch = image_batch.to(dtype=torch.float32, copy=True)
 
         if self.visualization_dir is not None:
             logger.warning(f"Visualization directory set to {self.visualization_dir}. Original image batch will be cloned and images will be saved to this directory.")
@@ -106,25 +145,25 @@ class MixedPoissonGaussianNoise:
         rng = self._get_generator(device)
         
         # Sample parameters for each batch element (image) if parameters are tuples
-        if isinstance(self.quantum_efficiency, tuple):
+        if isinstance(self.quantum_efficiency, (tuple, list)):
             qe = torch.empty(B, device=device)
             qe.uniform_(*self.quantum_efficiency, generator=rng)
         else:
             qe = torch.full((B,), self.quantum_efficiency, device=device)
             
-        if isinstance(self.electrons_per_count, tuple):
+        if isinstance(self.electrons_per_count, (tuple, list)):
             epc = torch.empty(B, device=device)
             epc.uniform_(*self.electrons_per_count, generator=rng)
         else:
             epc = torch.full((B,), self.electrons_per_count, device=device)
             
-        if isinstance(self.sigma_background_noise, tuple):
+        if isinstance(self.sigma_background_noise, (tuple, list)):
             sigma_bg = torch.empty(B, device=device)
             sigma_bg.uniform_(*self.sigma_background_noise, generator=rng)
         else:
             sigma_bg = torch.full((B,), self.sigma_background_noise, device=device)
             
-        if isinstance(self.mean_background_offset, tuple):
+        if isinstance(self.mean_background_offset, (tuple, list)):
             mean_offset = torch.empty(B, device=device)
             mean_offset.uniform_(*self.mean_background_offset, generator=rng)
         else:
@@ -138,6 +177,13 @@ class MixedPoissonGaussianNoise:
 
         # sensor pipeline with noise: photons → noisy counts
         # 1. Convert photons → electrons
+        if isinstance(self.photon_scale, (tuple, list)):
+            scale = torch.empty(B, device=device)
+            scale.uniform_(*self.photon_scale, generator=rng)
+            image_batch *= scale.view(-1, *[1] * (image_batch.ndim - 1))
+        elif float(self.photon_scale) != 1.0:
+            image_batch *= float(self.photon_scale)
+
         image_batch *= qe
 
         # 2. Compute shot noised electrons (Poisson thinned by QE) 

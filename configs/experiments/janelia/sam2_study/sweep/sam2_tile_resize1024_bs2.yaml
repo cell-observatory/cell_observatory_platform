@@ -1,0 +1,39 @@
+# @package _global_
+# Tile-mode RESIZE path (today's inference path): whole 128x512x{2560..3328} tile read per sample and resized to 128x384x1024 (X squashed ~3x, masks resampled),
+# recipe stack, max_masks 96 (tiles hold ~226 instances; cap <= 100), bs 2/GPU (mask term ~2x the cube-mode row).
+# Expected I/O-bound (stage-0a: ~20 s/sample/rank reading whole tiles from /groups); this row measures it on the recipe.
+defaults:
+  - /experiments/janelia/sam2_study/sweep/local_recipe_base
+  - _self_
+
+experiment_name: sam2_tile_resize1024_bs2
+
+clusters:
+  batch_size: 16
+
+datasets:
+  train_shape: [1, 128, 384, 1024, 5]
+  input_shape: [1, 128, 384, 1024, 6]
+  max_rows: 2048              # 100 steps x 16 = 1600 tile rows; tile queries sort the whole table (~5 min)
+  buffer_capacity: 4          # one slot = one batch of 2 whole tiles (~2.8 GB each)
+  preprocessor:
+    max_masks: 96
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.resize.Resize
+        target_spatial_shape: [128, 384, 1024]
+        mode: trilinear
+        align_corners: false
+        dtype: ${quantization}
+        bbox_format: ${datasets.collate_fn.bbox_output_format}
+        boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
+        crop_to_valid: true
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}
+  databases:
+    sample_type: tile
+    max_tile_shape: [128, 512, 3328]
+
+trainer_loop:
+  max_steps: 100

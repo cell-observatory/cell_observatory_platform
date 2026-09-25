@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.adapters.vit_adapter.BUILD
+name: vit_adapter
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.train_shape}
 patch_shape: ${datasets.patch_shape}

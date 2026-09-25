@@ -1,57 +1,95 @@
-_target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+inferencer_worker:
+  name: inferencer_worker
+  aggregate_mode: "none"
+  inference_mode: "tile"
+  task: semantic_segmentation
+  # Configures which tensors get passed to the viz / save workers
+  outputs_metadata:
+    tensor_info:
+      data_tensor:
+        shape: ${datasets.input_shape}
+        dtype: ${dataset_dtype}
+        # Declares the image as a DENSE viz tensor (rendered in the processed frame,
+        # same as the predictions, so overlays align).
+        kind: dense
+        data_format: ${dataset_layout_order}
+    buffer_tensors:
+      - pred_masks
+      - data_tensor
+      - masks_labelmap
+    visualize_tensors:
+      - pred_masks
+      # - pred_scores
+      - pred_classes
+      - data_tensor
+      - masks_labelmap
+      # - pred_boxes
+    save_tensors:
+      masks_labelmap:
+        name: semantic_masks
+        dtype: ${storage_dtype}
+        annotation_type: dense
+        data_format: ZYXC
+      # class_labels was dropped from Mask2Former outputs (duplicate of
+      # pred_classes) -- consumers read pred_classes.
+      pred_classes:
+        name: labels
+        dtype: ${storage_dtype}
+        annotation_type: sparse
+        data_format: N
+ 
+  # Data shape configuration
+  input_format: ${dataset_layout_order}
+  input_shape: ${datasets.input_shape}
+  patch_shape: ${datasets.patch_shape}
 
-aggregate_mode: save_local
+  # Toggle viz / save workers
+  save_outputs: true
+  block_on_save: false
+  vizualize_outputs: true
+  block_on_viz: false
 
-use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
-hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}
+save_worker:
+  max_workers: 2
+  save_mode: "create"
+  shard_spatial_shape: [128, 128, 128]
+  chunk_spatial_shape: [32, 32, 32]
 
-input_format: ${dataset_layout_order} 
-input_shape: ${datasets.input_shape}
-patch_shape: ${datasets.patch_shape}
-timepoint_list: ${datasets.databases.timepoint_list}
+viz_worker:
+  max_workers: 2
+  output_dir: ${paths.outdir}/visualizations
+  # Configures what visualization handlers to use
+  handler_configs:
+    # instance_overlay:
+    #   pred_boxes_format: xyzxyz
+    #   gt_boxes_format: cxcyczwhd
+    #   z_step: 10
+    #   pmin: 1.0
+    #   pmax: 99.0
+    #   scale_gt_boxes: true
+    #   input_format: ZYXC
+    #   ortho: true
 
-task: semantic_segmentation
-decoder_head_type: "mask2former"
-feature_viz_type: null
+    # feature_viz:
+    #   gt_key: data_tensor
+    #   # Must match a key in model predictions (MaskDINO: masks, boxes, labels, scores)
+    #   feat_key: masks
+    #   z_step_pdf: 10
+    #   pmin: 1.0
+    #   pmax: 99.0
+    #   fit: per_t
+    #   sample_voxels: 50000
+    #   viz: pca
 
-roi_tile_list: null
+    # save_predictions:
+    #   save_tensors: ["pred_masks"]
+    #   z_step_pdf: 10
+    #   pmin: 1.0
+    #   pmax: 99.0
 
-protocol: ${datasets.databases.protocol}
-dotenv_path: null
-dbname: ${datasets.databases.dbname}
-server_folder_path: ${paths.server_folder_path}
-verbose: false
-max_hypercubes: null
-max_partitions: 10
-
-save_dir: ${paths.outdir}/inference_semantic_segmentation
-
-# plotting parameters
-save_as_pdf: true
-save_as_volume: false
-z_step_pdf: 1
-mip_depth: 1
-pmin: 1.0
-pmax: 99.0
-
-# TIFF OPTION:
-# save_format: "tiff"
-# zarr_chunk_shape: null
-# zarr_shard_shape: null
-
-# ZARR OPTION:
-save_format: "zarr"
-zarr_chunk_shape: [32, 32, 32]
-zarr_shard_shape: [128, 128, 128]
-
-outputs_metadata:
-  predictions:
-    activation: null
-    num_output_channels: 1
-
-auxiliary_outputs:
-  - name: data_tensor
-    path: data_tensor
-    num_output_channels: ${datasets.input_shape[3]}
-    activation: null
-    patchified: false
+    semantic_map:
+      z_step_pdf: 10
+      pmin: 1.0
+      pmax: 99.0
+      mip_depth: 1
+      class_names: ["boundary", "interior"]

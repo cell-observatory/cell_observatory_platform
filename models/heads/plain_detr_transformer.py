@@ -207,6 +207,7 @@ class Transformer(nn.Module):
                 torch.linspace(0, D_ - 1, D_, dtype=torch.float32, device=memory.device),
                 torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
                 torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device),
+                indexing="ij",
             )
             # grid: [D_, H_, W_, 3]
             grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1), grid_z.unsqueeze(-1)], -1)
@@ -422,6 +423,7 @@ class TransformerReParam(Transformer):
                 torch.linspace(0, D_ - 1, D_, dtype=torch.float32, device=memory.device),
                 torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
                 torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device),
+                indexing="ij",
             )
             # grid: [D_, H_, W_, 3] -> [N_, D_, H_, W_, 3]
             grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1), grid_z.unsqueeze(-1)], -1)
@@ -495,34 +497,13 @@ class TransformerReParam(Transformer):
         )
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("head", "plain_detr")
 def BUILD(cfg: Mapping[str, Any]) -> Transformer:
     """
     Factory for Transformer / TransformerReParam.
-    Expects:
-      d_model: int
-      nheads: int
-      num_feature_levels: int
-      two_stage: bool
-      two_stage_num_proposals: int (optional; if missing we use num_queries_* sum)
-      norm_type: str
-      decoder_type: str
-      proposal_feature_levels: int
-      proposal_in_stride: int
-      proposal_tgt_strides: list[int]
-      proposal_min_size: int
-      global_decoder_args: Mapping
-      add_transformer_encoder: bool
-      dim_feedforward: int
-      dropout: float
-      activation: str
-      normalize_before: bool
-      num_encoder_layers: int
-
-      # injected by PlainDETR.BUILD
-      reparam: bool
-      num_queries_one2one: int
-      num_queries_one2many: int
-      mixed_selection: bool
     """
     reparam = cfg.get("reparam")
     num_q1 = cfg.get("num_queries_one2one")

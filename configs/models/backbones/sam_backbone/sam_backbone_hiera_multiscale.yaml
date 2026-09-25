@@ -1,12 +1,17 @@
 # Hiera large multiscale backbone for SAM; 3 scales with q_pool=2
 # backbone_native_channels: Hiera large final stage = 144 * 2^3 = 1152 (dim_mul at each stage boundary)
-BUILD: cell_observatory_platform.models.backbones.sam_backbone.BUILD
+name: sam
 
+# Every level is projected to backbone_embed_dims[-1]; SAM2's mask decoder
+# (conv_s0/conv_s1) and memory attention are built at sam_embed_dim, so the
+# per-level width must equal it.
 backbone_embed_dims:
-  - 256
-  - 256
-  - 256
-backbone_native_channels: 1152
+  - ${models.meta_arch.sam.sam_embed_dim}
+  - ${models.meta_arch.sam.sam_embed_dim}
+  - ${models.meta_arch.sam.sam_embed_dim}
+# large_multiscale uses channel_proj_type=equalization: each level arrives at
+# multiscale_out_dim wide, which sizes the wrapper's LayerNorms and projection.
+backbone_native_channels: ${models.backbones.masked_hiera_encoder.multiscale_out_dim}
 use_sam_channel_projection: true
 train_backbone: true
 use_layernorm: true

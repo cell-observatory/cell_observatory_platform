@@ -1,0 +1,25 @@
+# SAM2 + Hiera-L multiscale (masked_hiera_encoder) image encoder:
+# SAM2.image_encoder (SAMBackbone).backbone (MaskedHieraEncoder).encoder (Hiera).blocks
+activation_checkpoint:
+  enable: false
+  modules:
+    - ["image_encoder.backbone.encoder", "blocks"]
+  selective_ac_option: 2
+  per_op_sac_force_recompute_mm_shapes_by_fqns: null
+  mode: "selective"
+  mm_recompute_frac: 2
+
+torch_compile:
+  enable: false
+  modules:
+    - ["image_encoder.backbone.encoder", "blocks"]
+  range: block_based
+  mode: null
+  dynamic: false
+  blockbased_fullgraph: false
+  enable_compiled_autograd: false
+  backend: inductor
+
+fsdp:
+  modules:
+    - ["image_encoder.backbone.encoder", "blocks"]

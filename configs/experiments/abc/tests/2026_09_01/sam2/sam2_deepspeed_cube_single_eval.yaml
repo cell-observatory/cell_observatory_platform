@@ -1,0 +1,178 @@
+# @package _global_
+# Feature: validation split + best-checkpoint hooks keyed on the validation loss.
+# Self-contained copy of base_sam2_deepspeed. The in-loop validation path
+# (ValidationLoopMixin.run_validation_step) feeds the TRAINING forward's outputs
+# to the evaluator; instance-mask metrics (sam2_instance_evaluator, mask_map)
+# consume model.evaluate_step intermediates and belong to job_type=test, so the
+# loss-based base_evaluator is the one that works here.
+defaults:
+  - /tasks/instance_segmentation
+  - /paths/local
+  - /hydra/overrides
+  - /datasets/databases/base_database
+  - /datasets/transforms/ray_transforms
+  - /datasets/preprocessor/ray_preprocessor
+  - /datasets/pretrain_dataset_ray
+  - /datasets/preprocessor/sam2video_preprocessor
+  - /datasets/masking/mask_generator
+  - /models/meta_arch/sam/base_single_scale
+  - /models/backbones/masked_encoder/large
+  - /models/backbones/sam_backbone/sam_backbone
+  - /checkpoint/checkpoint
+  - /loggers/loggers
+  - /evaluation/base_evaluator # in-loop validation is loss-based (val step_loss, min)
+  - /deepspeed/zero2
+  - /optimizers/adamw_torch
+  - /schedulers/warmup_cosine_decay
+  - /optimizations/models/sam/large
+  - /optimizations/optimizations
+  - /profiling/profiling
+  - /clusters/local
+  - _self_
+
+experiment_name: sam2_abc_deepspeed_single_cube_128_eval
+wandb_project: testing
+
+backend: DEEPSPEED
+distributed_framework: ray
+run_type: single_run
+job_type: train
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+quantization: bfloat16
+dataset_dtype: float16
+storage_dtype: uint16
+dataset_layout_order: TZYXC
+seed: 42
+
+task: finetuning
+network: baseline
+engine: deepspeed
+
+# dgx0.abc0 node shape: 8x A100-80GB, 128 cores, ~2 TB RAM. bs_per_gpu = batch_size // 8.
+clusters:
+  batch_size: 8       # 1 per GPU
+  worker_nodes: 1
+  gpus_per_worker: 8
+  cpus_per_gpu: 8
+  mem_per_cpu: 31000
+  ray_queue_memory: 0.2
+
+# overrides
+# --------------------------------------------------------------------------------
+
+optimizations:
+  env:
+    # The launcher's apptainer exec inherits the host env and binds $HOME, so the
+    # user's ~/.local site-packages shadows the image's `numa` module
+    # (ImportError: cannot import name 'schedule' from 'numa'). Exported by
+    # manager.py before launch; workers inherit it.
+    PYTHONNOUSERSITE: "1"
+
+# Use the PointRend point-sampling loss path (labelmap-native).
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: true
+        num_points: 26000          # kept from the H200 unit (~10% of its 32x64x128
+                                    # stride-4 grid); at 128^3 the grid is 32^3=32768
+        low_res_multimasks: true    # focal/dice on LOW-RES stream;
+                                    # dense iou_loss reads HIGH-RES forward-only
+
+paths:
+  outdir: ${paths.data_path}/testing/${experiment_name}
+  # null -> dry_lab.storage_locations.root_path from the DB
+  # (synthetic: /clusterfs/vast/forsynthetic/.../synthetic_data_iteration_2, mounted on abc).
+  server_path_override: null
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+datasets:
+  batch_size: ${clusters.batch_size_per_gpu}
+  # This node is used from a 16-core Slurm cpuset (cores 0-7,64-71); the per-GPU
+  # NUMA bind (bind_current_process_to_node) raises when a GPU's NUMA node has
+  # no CPUs in the cpuset. Pinning cannot help with 16 cores anyway.
+  pin_numa_node: false
+  # cod_db_20260824 materializes only shape_id 1 (1x128x128x128) cubes; the cube
+  # query pins T/Z/Y/X, so other shapes return 0 rows. 5 signal + 1 mask channel.
+  train_shape: [1, 128, 128, 128, 5]
+  input_shape: [1, 128, 128, 128, 6]
+  patch_shape: [1, 16, 16, 16, null]
+  mask_channel_idx: 5
+  last_batch_policy: drop
+
+  split: 0.1 # 10% held out -> validation pass after the epoch
+  return_dataloader: true
+  distributed_sampler: true
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  use_cached_hypercubes_dataframe: false
+  max_rows: 128 # sanity probe: 128 cubes -> 16 steps/epoch at 8 per step
+  cdf_threshold: null
+  cdf_target: null
+  selected_channel_localizations: ["membrane", "cytosol"]
+  has_annotations: true
+  synthetic_only: true
+
+  preprocessor:
+    max_masks: 8 # deliberately low for sanity runs (A100 fits 26 at 128x384x512); throughput is not the goal here
+
+  databases:
+    dbname: local
+    protocol: cursor
+    verbose: true
+    diagnostic_verbose: false
+    sample_type: cube
+    data_channel_count: 5 # SIGNAL channels only (mask excluded); 6 -> 0 rows
+    required_channel_localizations: ["membrane", "cytosol"]
+    storage_location: synthetic # dry_lab.storage_locations name (vast-main | abc2-main | synthetic)
+
+  collate_fn:
+    _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
+    require_targets: true
+    dtype: ${dataset_dtype}
+    buffer_dtype: ${storage_dtype}
+    batch_size: ${clusters.batch_size_per_gpu}
+    input_shape: ${datasets.input_shape}
+    input_format: ${dataset_layout_order}
+    device_buffer_capacity: 2
+    pin_numa_node: ${datasets.pin_numa_node}
+    pin_pages: ${datasets.pin_memory}
+    bbox_data_format: zyxzyx
+    bbox_output_format: cxcyczwhd
+    debug: false
+    debug_device_idx: 0
+    normalize_bboxes: true
+    async_device_copy: false
+
+schedulers:
+  epochs: 1
+  warmup: 0   # group defaults (30/15) would swallow a 1-epoch run
+  cooldown: 0
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-4
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: DEEPSPEED
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: DEEPSPEED
+    time_interval: 3h30m
+  - name: best_checkpointer
+    backend: DEEPSPEED
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - name: best_metric_saver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

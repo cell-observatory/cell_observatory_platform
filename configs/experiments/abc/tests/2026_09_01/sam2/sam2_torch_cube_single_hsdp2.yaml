@@ -1,0 +1,12 @@
+# @package _global_
+# Feature: HSDP -- 2 replica groups x 4-way FSDP shard (replicate * shard == 8).
+defaults:
+  - base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_single_cube_128_hsdp2
+
+parallelism:
+  training:
+    data_parallel_replicate_degree: 2
+    data_parallel_shard_degree: -1 # -> 8 / 2 = 4

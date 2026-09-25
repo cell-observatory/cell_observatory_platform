@@ -1,0 +1,6 @@
+# @package _global_
+# MAE ViT-H (1280 x 32): ~2x the encoder cost of L -> bs 32/GPU guess.
+defaults: [/experiments/janelia/sam2_study/sweep/pretrain/mae_vit_base, /models/meta_arch/mae/huge, /optimizations/models/mae/huge, _self_]
+experiment_name: mae_vit_H_bs32
+clusters: {batch_size: 256}
+models: {meta_arch: {mae: {abs_sincos_enc: true, rope_pos_enc: false, with_auxiliary_loss: false, loss_fn: l2_masked}}}

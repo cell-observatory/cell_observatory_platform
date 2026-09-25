@@ -3,11 +3,9 @@ Partly adapted from:
 https://github.com/pytorch/torchtitan/torchtitan/components/optimizer.py
 """
 
-import logging
+from __future__ import annotations   # lazy annotations: torchtitan types stay import-free
 
-from deepspeed.ops.adam import FusedAdam
-from deepspeed.ops.lamb import FusedLamb
-from deepspeed.runtime.lr_schedules import WarmupCosineLR
+import logging
 
 from omegaconf import DictConfig
 
@@ -26,12 +24,81 @@ from torch.distributed.checkpoint.stateful import Stateful
 
 from timm.optim.lion import Lion
 
-from torchtitan.distributed import ParallelDims
-from torchtitan.components.ft import FTManager, has_torchft
+from cell_observatory_platform.utils.registry import REGISTRY
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
+
+
+# --- Registry -------------------------------------------------------------- #
+# Each optimizer is a config-selected swap point (`config.optimizers.name`). The
+# factory reads the `optimizers` sub-config node and receives `params=` from the
+# caller.
+
+@REGISTRY.register("optimizer", "adamw")
+def _build_adamw(cfg, *, params):
+    from deepspeed.ops.adam import FusedAdam  # lazy: see module docstring note
+
+    return FusedAdam(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=tuple(cfg.betas),
+        eps=cfg.eps,
+    )
+
+
+@REGISTRY.register("optimizer", "adamw_torch")
+def _build_adamw_torch(cfg, *, params):
+    # NOTE: sometimes DeepSpeed's fused AdamW has issues, so we fall back to
+    #       torch's implementation.
+    return torch.optim.AdamW(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=tuple(cfg.betas),
+        eps=cfg.eps,
+        fused=True,
+    )
+
+
+@REGISTRY.register("optimizer", "lamb")
+def _build_lamb(cfg, *, params):
+    from deepspeed.ops.lamb import FusedLamb  # lazy: see module docstring note
+
+    return FusedLamb(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=tuple(cfg.betas),
+        eps=cfg.eps,
+    )
+
+
+@REGISTRY.register("optimizer", "lion")
+def _build_lion(cfg, *, params):
+    return Lion(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=tuple(cfg.betas),
+    )
+
+
+@REGISTRY.register("optimizer", "lamb_torch")
+def _build_lamb_torch(cfg, *, params):
+    # torch-native LAMB (no DeepSpeed FusedLamb dependency); plain-torch ops,
+    # so it also works on FSDP2 DTensor parameters.
+    from timm.optim import Lamb  # lazy: keep timm.optim.lamb off actor imports
+
+    return Lamb(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=tuple(cfg.betas),
+        eps=cfg.eps,
+    )
 
 
 def get_optimizer(
@@ -39,85 +106,14 @@ def get_optimizer(
     config: DictConfig,
     optimizer: str,
     steps_per_epoch: int,
-    deepspeed_scheduler: bool = False
 ):
-    if optimizer == "adamw":
-        opt = FusedAdam(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=tuple(config.optimizers.betas),
-            eps=config.optimizers.eps,
-        )
-    #NOTE: sometimes DeepSpeed's fused AdamW has issues, so we 
-    #      fall back to torch's implementation
-    elif optimizer == "adamw_torch":
-        opt = torch.optim.AdamW(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=tuple(config.optimizers.betas),
-            eps=config.optimizers.eps,
-            fused=True
-        )
-    elif optimizer == "lamb":
-        opt = FusedLamb(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=(0.9, 0.99),
-            eps=1e-08,
-        )
-    elif optimizer == "lion":
-        opt = Lion(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=tuple(config.optimizers.betas),
-        )
-    # NOTE: not supported fully yet
-    # elif optimizer == "muon":
-    #     opt = Muon(
-    #         params,
-    #         lr=config.optimizers.lr,
-    #         weight_decay=config.optimizers.wd,
-    #         eps=config.optimizers.eps,
-    #         adjust_lr_fn=config.optimizers.get("adjust_lr_fn", None),
-    #     )
-    else:
-        raise ValueError(f"Optimizer {optimizer} not supported")
-
-    if deepspeed_scheduler:
-        decay_epochs = config.schedulers.epochs - (config.schedulers.warmup + config.schedulers.cooldown)
-        total_steps = config.schedulers.epochs * steps_per_epoch
-        warmup_steps = config.schedulers.warmup * steps_per_epoch
-        decay_steps = total_steps - warmup_steps
-
-        cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
-        warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
-
-        logger.info("-" * 80)
-        logger.info(
-            f"Epochs: {config.schedulers.epochs} = "
-            f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + NA cooldown]\n"
-            f"Steps: {total_steps} = "
-            f"[{warmup_steps} warmup + {decay_steps} decay + NA cooldown]\n"
-            f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
-        )
-        logger.info("-" * 80)
-
-        scheduler = WarmupCosineLR(
-            optimizer=opt,
-            total_num_steps=total_steps,
-            warmup_num_steps=warmup_steps,
-            warmup_min_ratio=config.schedulers.warmup_min_ratio,
-            cos_min_ratio=config.schedulers.cos_min_ratio,
-            warmup_type=config.schedulers.cos_miwarmup_type,
-        )
-
-        return opt, scheduler
-    else:
-        return opt, None
+    # NOTE: `muon` is not supported fully yet — it is intentionally left
+    #       unregistered, so `name: muon` fails loud at build (was the else-branch):
+    #     Muon(params, lr=config.optimizers.lr, weight_decay=config.optimizers.wd,
+    #          eps=config.optimizers.eps,
+    #          adjust_lr_fn=config.optimizers.get("adjust_lr_fn", None))
+    opt = REGISTRY.build("optimizer", optimizer, config.optimizers, params=params)
+    return opt, None
 
 
 # --- TorchTitan Support --- #
@@ -143,7 +139,10 @@ class OptimizersContainer(Optimizer, Stateful, Generic[T]):
     Args:
         model_parts (List[nn.Module]): List of model parts to be optimized.
         optimizer_kwargs (Dict[str, Any]): Keyword arguments for the optimizers.
-        name (str): Name of the optimizers.
+        param_groups (List[dict] | None): Pre-split parameter groups (e.g. the
+            decay/no-decay split from ``schedulers.get_param_groups``). Only
+            supported with a single model part; when omitted, all
+            ``requires_grad`` parameters form one group.
     """
 
     optimizers: list[T]
@@ -154,14 +153,24 @@ class OptimizersContainer(Optimizer, Stateful, Generic[T]):
         model_parts: list[nn.Module],
         optimizer_cls: type[T],
         optimizer_kwargs: dict[str, Any],
+        param_groups: list[dict] | None = None,
     ) -> None:
+        if param_groups is not None and len(model_parts) != 1:
+            raise ValueError(
+                "param_groups is only supported with a single model part "
+                f"(got {len(model_parts)})."
+            )
         all_params = []
         self.optimizers = []
         self.model_parts = model_parts
         for model in self.model_parts:
-            params = [p for p in model.parameters() if p.requires_grad]
+            if param_groups is not None:
+                params = param_groups
+                all_params.extend(p for g in param_groups for p in g["params"])
+            else:
+                params = [p for p in model.parameters() if p.requires_grad]
+                all_params.extend(params)
             self.optimizers.append(optimizer_cls(params, **optimizer_kwargs))
-            all_params.extend(params)
         self._validate_length(len(self.model_parts))
         self._post_init(all_params, optimizer_kwargs)
 
@@ -170,6 +179,11 @@ class OptimizersContainer(Optimizer, Stateful, Generic[T]):
 
     def __len__(self) -> int:
         return len(self.optimizers)
+
+    def __getitem__(self, idx: int) -> T:
+        # hooks address the wrapped optimizers positionally
+        # (e.g. WeightDecayScheduleHook reads trainer.optimizers[0].param_groups)
+        return self.optimizers[idx]
 
     def step(self, *args, **kwargs) -> None:
         for optimizer in self.optimizers:
@@ -200,8 +214,7 @@ class OptimizersContainer(Optimizer, Stateful, Generic[T]):
 
     def _validate_length(self, expected_length: int) -> None:
         assert expected_length == len(self.optimizers), (
-            "Must pass one optimizer per model part or per param if "
-            "using OptimizersInBackwardContainer."
+            "Must pass one optimizer per model part."
         )
 
     def _post_init(
@@ -212,125 +225,96 @@ class OptimizersContainer(Optimizer, Stateful, Generic[T]):
         Optimizer.__init__(self, all_params, optimizer_kwargs)
 
 
-class OptimizersInBackwardContainer(OptimizersContainer):
-    """OptimizersContainer for executing ``optim.step()`` in backward pass.
-
-    This class extend ``OptimizersContainer`` to support optimizer step in
-    backward pass. ``step()`` and ``zero_grad()`` are no-op in this class.
-    Instead, ``register_post_accumulate_grad_hook`` is used to register a hook to
-    execute these methods when the gradient is accumulated.
-    """
-
-    def __init__(
-        self,
-        model_parts: list[nn.Module],
-        optimizer_cls: type[T],
-        optimizer_kwargs: dict[str, Any],
-    ) -> None:
-        all_params = []
-        self.model_parts = model_parts
-
-        optim_dict = {}
-        for model in self.model_parts:
-            for p in model.parameters():
-                if p.requires_grad:
-                    optim_dict[p] = optimizer_cls([p], **optimizer_kwargs)
-                all_params.append(p)
-
-        def optim_hook(param) -> None:
-            optim_dict[param].step()
-            optim_dict[param].zero_grad()
-
-        for model in self.model_parts:
-            for param in model.parameters():
-                if param.requires_grad:
-                    param.register_post_accumulate_grad_hook(optim_hook)
-
-        self.optimizers = list(optim_dict.values())
-
-        self._validate_length(
-            sum(len(list(model.parameters())) for model in self.model_parts)
-        )
-        self._post_init(all_params, optimizer_kwargs)
-
-    def step(self) -> None:
-        pass
-
-    def zero_grad(self) -> None:
-        pass
-    
-
 def build_optimizers(
     model_parts: list[nn.Module],
-    optimizer_config: dict,
-    parallel_dims: ParallelDims,
-    ft_manager: FTManager | None = None,
+    optimizer_config: DictConfig,
+    param_groups: list[dict] | None = None,
 ) -> OptimizersContainer:
-    """Create a OptimizersContainer for the given model parts and job config.
+    """Create an OptimizersContainer from the repo's ``optimizers`` config node.
 
-    This function creates a ``OptimizersContainer`` for the given model parts.
-    ``optimizer_config`` should define the correct optimizer name and parameters.
-    This function currently supports creating ``OptimizersContainer`` and
-    ``OptimizersInBackwardContainer``.
+    Consumes the same schema the DeepSpeed path uses
+    (``configs/optimizers/*.yaml``: name/lr/wd/betas/eps), plus an optional
+    ``implementation`` in {"fused", "foreach", "for-loop"} (default "fused";
+    ignored for optimizers without those kwargs).
 
     Args:
         model_parts (List[nn.Module]): List of model parts to be optimized.
-        optimizer_config (OptimizerConfig): Optimizer config containing the optimizer name and parameters.
-        parallel_dims (ParallelDims): Parallel dimensions for the model.
+        optimizer_config (DictConfig): ``cfg.optimizers`` node.
+        param_groups (List[dict] | None): Pre-split parameter groups from
+            ``schedulers.get_param_groups`` (decay/no-decay, layer decay).
     """
-    optim_in_bwd = optimizer_config["early_step_in_backward"]
-    if optim_in_bwd:
-        if parallel_dims.ep_enabled:
-            raise NotImplementedError(
-                "Optimizers in backward is not supported with Expert Parallel."
-            )
-        if parallel_dims.pp_enabled:
-            raise NotImplementedError(
-                "Optimizers in backward is not supported with Pipeline Parallel."
-            )
-        if ft_manager and ft_manager.enabled:
-            raise NotImplementedError(
-                "TorchFT is not supported with optimizers in backward."
-            )
-
-    name = optimizer_config["name"]
-    lr = optimizer_config["lr"]
-    beta1 = optimizer_config["beta1"]
-    beta2 = optimizer_config["beta2"]
-    eps = optimizer_config["eps"]
-    weight_decay = optimizer_config["wd"]
-
-    optim_implementation = optimizer_config["implementation"]
-    assert optim_implementation in ["fused", "foreach", "for-loop"]
-
-    fused = optim_implementation == "fused"
-    foreach = optim_implementation == "foreach"
-
-    optimizer_kwargs = {
-        "lr": lr,
-        "betas": (beta1, beta2),
-        "eps": eps,
-        "weight_decay": weight_decay,
-        "fused": fused,
-        "foreach": foreach,
+    name = optimizer_config.name
+    optimizer_kwargs: dict[str, Any] = {
+        "lr": optimizer_config.lr,
+        "betas": tuple(optimizer_config.betas),
+        "eps": optimizer_config.eps,
+        "weight_decay": optimizer_config.wd,
     }
 
     optimizer_classes = {
-        "Adam": torch.optim.Adam,
-        "AdamW": torch.optim.AdamW,
+        "adam_torch": torch.optim.Adam,
+        "adamw_torch": torch.optim.AdamW,
     }
-    if name not in optimizer_classes:
-        raise NotImplementedError(f"Optimizer {name} not added.")
-    optimizer_cls = optimizer_classes[name]
+    if name in optimizer_classes:
+        implementation = optimizer_config.get("implementation", "fused")
+        if implementation not in ("fused", "foreach", "for-loop"):
+            raise ValueError(
+                f"Unknown optimizer implementation: {implementation!r}. "
+                "Valid: fused, foreach, for-loop."
+            )
+        optimizer_kwargs["fused"] = implementation == "fused"
+        optimizer_kwargs["foreach"] = implementation == "foreach"
+        optimizer_cls = optimizer_classes[name]
+    elif name == "lamb_torch":
+        from timm.optim import Lamb  # lazy: see module docstring note
 
-    if optim_in_bwd:
-        return OptimizersInBackwardContainer(
-            model_parts, optimizer_cls, optimizer_kwargs
-        )
-
-    if ft_manager and ft_manager.enabled:
+        optimizer_cls = Lamb
+    elif name == "lion_torch":
+        optimizer_cls = Lion
+        optimizer_kwargs.pop("eps")
+    else:
         raise NotImplementedError(
-            "TorchFT is not yet supported with multiple optimizers."
+            f"Optimizer {name!r} is not supported on the torch-native path. "
+            "Valid: adam_torch, adamw_torch, lamb_torch, lion_torch."
         )
 
-    return OptimizersContainer(model_parts, optimizer_cls, optimizer_kwargs)
+    return OptimizersContainer(
+        model_parts, optimizer_cls, optimizer_kwargs, param_groups=param_groups
+    )
+
+# --------------------------------------------------------------------------- #
+# PARKED (planned return; do NOT delete): deepspeed-managed LR scheduler branch of get_optimizer
+# --------------------------------------------------------------------------- #
+# # (was the `if deepspeed_scheduler:` branch of get_optimizer; note the
+# #  `cos_miwarmup_type` typo -- should be `warmup_type` -- if resurrected)
+#     if deepspeed_scheduler:
+#         decay_epochs = config.schedulers.epochs - (config.schedulers.warmup + config.schedulers.cooldown)
+#         total_steps = config.schedulers.epochs * steps_per_epoch
+#         warmup_steps = config.schedulers.warmup * steps_per_epoch
+#         decay_steps = total_steps - warmup_steps
+#
+#         cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
+#         warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
+#
+#         logger.info("-" * 80)
+#         logger.info(
+#             f"Epochs: {config.schedulers.epochs} = "
+#             f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + NA cooldown]\n"
+#             f"Steps: {total_steps} = "
+#             f"[{warmup_steps} warmup + {decay_steps} decay + NA cooldown]\n"
+#             f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
+#         )
+#         logger.info("-" * 80)
+#
+#         scheduler = WarmupCosineLR(
+#             optimizer=opt,
+#             total_num_steps=total_steps,
+#             warmup_num_steps=warmup_steps,
+#             warmup_min_ratio=config.schedulers.warmup_min_ratio,
+#             cos_min_ratio=config.schedulers.cos_min_ratio,
+#             warmup_type=config.schedulers.cos_miwarmup_type,
+#         )
+#
+#         return opt, scheduler
+#     else:
+#         return opt, None

@@ -1,0 +1,7 @@
+# @package _global_
+# MAE ViT-B (768 x 12): ~2.5x cheaper than L per sample -> bs 128/GPU guess. Size groups merged by path (see sam2_ms_base note).
+defaults: [/experiments/janelia/sam2_study/sweep/pretrain/mae_vit_base, /models/meta_arch/mae/base, /optimizations/models/mae/base, _self_]
+experiment_name: mae_vit_B_bs128
+clusters: {batch_size: 1024}
+datasets: {max_rows: 131072}
+models: {meta_arch: {mae: {abs_sincos_enc: true, rope_pos_enc: false, with_auxiliary_loss: false, loss_fn: l2_masked}}}

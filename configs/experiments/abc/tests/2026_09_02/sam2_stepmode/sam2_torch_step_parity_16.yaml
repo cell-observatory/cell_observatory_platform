@@ -1,0 +1,22 @@
+# @package _global_
+# Step mode, S1: max_steps == one epoch (128 seeded rows / 8 per step = 16).
+# Expect the per-step lr and losses to match the epoch-mode baseline
+# sam2_torch_ch_joint (same seed, rows, data order, 16-step cosine horizon),
+# one checkpoint at step-16, epoch counter ends at 1.
+defaults:
+  - /experiments/abc/tests/2026_09_01/sam2/base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_step_parity_16
+
+datasets:
+  max_rows: 128
+  row_sample_seed: 42
+
+trainer_loop:
+  iteration_mode: step
+  max_steps: 16
+  val_every_n_steps: null
+  checkpoint_save_period: 16 # optimizer steps
+  checkpoint_every_n_epochs: null
+  with_perf_metrics: false

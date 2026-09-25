@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.masked_predictor.BUILD
+name: mae_decoder
 
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.train_shape}

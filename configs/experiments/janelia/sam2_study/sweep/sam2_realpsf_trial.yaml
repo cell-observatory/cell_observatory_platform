@@ -1,0 +1,18 @@
+# @package _global_
+# Trial segmentation run with the measured PSF (CamA_Arc_OMW) + sensor noise from the recipe: 40 steps at the recipe batch,
+# to prove the training pipeline end to end before the LR sweep. Inspection PNGs of the same transforms come from
+# scripts/utils/plot_psf_noise_samples.py.
+defaults:
+  - /experiments/janelia/sam2_study/sweep/local_recipe_base
+  - _self_
+
+experiment_name: sam2_realpsf_trial
+
+clusters:
+  batch_size: 64
+
+datasets:
+  max_rows: 4096
+
+trainer_loop:
+  max_steps: 40

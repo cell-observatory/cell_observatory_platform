@@ -1,44 +1,47 @@
-BUILD: cell_observatory_platform.models.meta_arch.plainDETR.BUILD
+# @package models
+model: plain_detr
 
-backbone_wrapper_args: ${models.backbones.plain_detr_backbone}
+meta_arch:
+  plainDETR:
 
-# NOTE: no adapter multi-scale features for now
-# Adapter
-# adapter_args: ${models.adapters}
-adapter_args: null
+    backbone_wrapper_args: ${models.backbones.plain_detr_backbone}
 
-# Transformer
-transformer_args: ${models.heads.plain_detr_transformer}
+    # NOTE: no adapter multi-scale features for now
+    # Adapter
+    # adapter_args: ${models.adapters}
+    adapter_args: null
 
-# Criterion
-criterion_args:
-  BUILD: cell_observatory_platform.training.losses.build_plainDETR_Set_Loss
-  num_classes: 1
-  weight_dict:
-    loss_ce: 2.0
-    loss_bbox: 5.0
-    loss_giou: 2.0
-  losses: ["labels", "boxes", "cardinality"]
-  focal_alpha: 0.25
-  reparam: true
-  matcher_args:
-    BUILD: cell_observatory_platform.models.layers.matchers.build_plain_detr_matcher
-    cost_class: 2.0
-    cost_bbox: 5.0
-    cost_giou: 2.0
-    cost_bbox_type: reparam
+    # Transformer
+    transformer_args: ${models.heads.plain_detr_transformer}
 
-# PlainDETR flags
-backbone_embed_dim: ${models.backbones.masked_encoder.embed_dim}
-num_classes: 1 # cell vs background
-num_feature_levels: 1
-with_box_refine: true
-two_stage: true
-aux_loss: true
-num_queries_one2one: 200
-num_queries_one2many: 1000 #0 # for now disable one2many
-k_one2many: 5 # null # 4 # for now disable one2many
-mixed_selection: true
-reparam: true
-lambda_one2many: 1.0 #null # 1.0
-normalize_pos_encodings: true
+    # Criterion
+    criterion_args:
+      name: plain_detr
+      num_classes: 1
+      weight_dict:
+        loss_ce: 2.0
+        loss_bbox: 5.0
+        loss_giou: 2.0
+      losses: ["labels", "boxes", "cardinality"]
+      focal_alpha: 0.25
+      reparam: true
+      matcher_args:
+        cost_class: 2.0
+        cost_bbox: 5.0
+        cost_giou: 2.0
+        cost_bbox_type: reparam
+
+    # PlainDETR flags
+    backbone_embed_dim: ${models.backbones.masked_encoder.embed_dim}
+    num_classes: 1 # cell vs background
+    num_feature_levels: 1
+    with_box_refine: true
+    two_stage: true
+    aux_loss: true
+    num_queries_one2one: 200
+    num_queries_one2many: 1000 #0 # for now disable one2many
+    k_one2many: 5 # null # 4 # for now disable one2many
+    mixed_selection: true
+    reparam: true
+    lambda_one2many: 1.0 #null # 1.0
+    normalize_pos_encodings: true

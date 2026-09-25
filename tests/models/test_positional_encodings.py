@@ -1,26 +1,22 @@
-import os
 import pytest
-from pathlib import Path
 
 import numpy as np
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 import torch
 
 from cell_observatory_platform.models.layers.positional_encoding import (
     # sincos
     PosEmbedding,
-    PositionalEmbeddingSinCos,
     positional_encoding_1d,
     positional_encoding_2d,
     positional_encoding_3d,
     positional_encoding_4d,
     sincos,
     # rope
+    _apply_rope_v2_k_only,
+    apply_rope,
     apply_rope_v1,
+    apply_rope_v2,
     compute_axial_cis,
     compute_mixed_cis,
     generate_frequency_spectrum,
@@ -62,24 +58,26 @@ def tokens(fmt, shape, lps, aps, tps):
     raise ValueError
 
 
-def fmt_shapes_and_patches():
-    return [
-        ("XC", (1, 8, 1), (2, 1, 1), (1, None)),
-        ("YXC", (1, 4, 4, 1), (2, 1, 1), (1, 1, None)),
-        ("TYXC", (1, 3, 4, 4, 1), (2, 1, 1), (2, 1, 1, None)),
-        ("ZYXC", (1, 3, 4, 4, 1), (2, 1, 1), (1, 1, 1, None)),
-        ("TZYXC", (1, 2, 3, 4, 4, 1), (2, 1, 1), (2, 1, 1, 1, None)),
-    ]
-
-
 # ------------------------------------------------------
-# Sin/Cos encodings: shapes only
+# Sin/Cos encodings: shapes and values
 # ------------------------------------------------------
 
 
 def test_sincos_fn_shapes():
     emb = sincos(embed_dim=8, pos=np.arange(4, dtype=np.float32))
     assert emb.shape == (4, 8)
+
+
+def test_sincos_values_at_origin_and_unit_circle():
+    """The table is [sin | cos] per frequency: zero phase at pos 0, unit circle everywhere."""
+    emb = sincos(embed_dim=8, pos=np.array([0.0, 1.0], dtype=np.float32))  # [2, 8] = [sin | cos]
+    assert emb.shape == (2, 8)
+    # pos 0 -> sin = 0, cos = 1 in every frequency
+    assert np.array_equal(emb[0, :4], np.zeros(4)) and np.array_equal(emb[0, 4:], np.ones(4))
+    # sin^2 + cos^2 == 1 per frequency
+    assert np.allclose(emb[1, :4] ** 2 + emb[1, 4:] ** 2, 1.0, atol=1e-6)
+    # lowest frequency is 1 rad / position (exponent 0 -> w = 1)
+    assert np.isclose(emb[1, 0], np.sin(1.0)) and np.isclose(emb[1, 4], np.cos(1.0))
 
 
 def test_posenc_1d_shapes():
@@ -164,12 +162,21 @@ def test_pos_embedding_forward_no_interp_shapes(fmt, shape, patches, patch_shape
 
 
 @pytest.mark.parametrize("fmt,shape,patches,patch_shape", fmt_shapes_and_patches())
-def test_pos_embedding_forward_interp_identity_shapes(fmt, shape, patches, patch_shape):
-    lps, aps, tps = patches
-    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=True)
-    x = torch.zeros(shape)
-    y = pe(x)
-    assert y.shape == (1, tokens(fmt, shape, lps, aps, tps), 16)
+def test_pos_embedding_interpolate_same_grid_is_identity(fmt, shape, patches, patch_shape):
+    """Interpolating the table onto its own grid must return the table unchanged."""
+    # interpolate=True is rejected at construction; call the grid-format method directly
+    # (what forward's interpolate branch does with patches_used=None).
+    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=False)
+    y = pe.interpolate_positional_encoding(torch.zeros(shape), pe.pos_embed)
+    assert y.shape == pe.pos_embed.shape
+    assert torch.equal(y, pe.pos_embed)
+
+
+def test_pos_embedding_interpolate_true_raises():
+    # config-contract guard: sequence-format callers would get silently wrong
+    # interpolation, so construction must fail loud.
+    with pytest.raises(NotImplementedError, match="grid"):
+        PosEmbedding("ZYXC", (4, 4, 4, 1), (1, 2, 2), embed_dim=16, cls_token=False, interpolate=True)
 
 
 @pytest.mark.parametrize(
@@ -185,9 +192,9 @@ def test_pos_embedding_forward_interp_identity_shapes(fmt, shape, patches, patch
 def test_pos_embedding_forward_interp_resized_shapes(fmt, shape, new_shape, patches):
     lps, aps, tps = patches
     patch_shape = _patch_shape_from(fmt, lps, aps, tps)
-    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=True)
+    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=False)
     x = torch.zeros(new_shape)
-    y = pe(x)
+    y = pe.interpolate_positional_encoding(x, pe.pos_embed)
     assert y.shape == (1, tokens(fmt, new_shape, lps, aps, tps), 16)
 
 
@@ -229,7 +236,7 @@ def test_generate_frequency_spectrum_shapes(gen_fmt, head_dim, num_heads, axes, 
     ],
 )
 @pytest.mark.parametrize("random_rotation_per_head", [False, True])
-def test_compute_mixed_and_axial_cis_and_apply_rotary_shapes(
+def test_rope_cis_and_apply_rope_v1_shapes(
     fmt, gen_fmt, head_dim, end_x, end_y, end_z, end_t, random_rotation_per_head
 ):
     num_heads = 3
@@ -262,6 +269,24 @@ def test_compute_mixed_and_axial_cis_and_apply_rotary_shapes(
 
     xq2, xk2 = apply_rope_v1(xq, xk, freqs_cis_mixed)
     assert xq2.shape == xq.shape and xk2.shape == xk.shape
+
+
+def test_apply_rope_v1_preserves_norm_and_is_identity_at_origin():
+    """RoPE is a per-pair rotation: norms are preserved, the grid origin has zero phase."""
+    torch.manual_seed(0)
+    head_dim, end_x, end_y, end_z = 12, 3, 2, 2  # ZYXC: 3 axes * (12//6=2) pairs -> J = 6 = D/2
+    cis = compute_axial_cis(head_dim, end_x, end_y, end_z, 1, input_fmt="ZYXC", theta=100.0, device="cpu")
+    N = end_x * end_y * end_z
+    assert cis.shape == (N, head_dim // 2)
+    # token 0 is the grid origin (generate_grid_indices: idx 0 -> x=y=z=0) -> zero phase
+    assert torch.allclose(cis[0], torch.ones_like(cis[0]))
+
+    xq, xk = torch.randn(2, 3, N, head_dim), torch.randn(2, 3, N, head_dim)
+    xq1, xk1 = apply_rope_v1(xq, xk, cis)
+    assert torch.allclose(xq1.norm(dim=-1), xq.norm(dim=-1), atol=1e-5)
+    assert torch.allclose(xk1.norm(dim=-1), xk.norm(dim=-1), atol=1e-5)
+    assert torch.allclose(xq1[:, :, 0], xq[:, :, 0], atol=1e-6)  # origin untouched
+    assert not torch.allclose(xq1[:, :, 1], xq[:, :, 1])  # neighbours rotated
 
 
 def test_reshape_for_broadcast_shapes():
@@ -299,395 +324,6 @@ def test_generate_grid_indices_shapes_all_formats():
     # TZYXC
     tt, tz, ty, tx = generate_grid_indices(3, 2, end_z=2, end_t=2, input_fmt="TZYXC")
     assert tt.numel() == 24 and tz.numel() == 24 and ty.numel() == 24 and tx.numel() == 24
-
-
-# ------------------------------------------------
-# Plotting Sanity Checks for Positional Encodings
-# ------------------------------------------------
-
-# ----------------------------
-# Plot helpers
-# ----------------------------
-
-def _get_outdir(tmp_path: Path) -> Path:
-    env = os.environ.get("POSENC_PLOT_DIR", "")
-    if env:
-        out = Path(env).expanduser().resolve()
-        out.mkdir(parents=True, exist_ok=True)
-        return out
-    return tmp_path
-
-def _savefig(outdir: Path, name: str) -> Path:
-    path = outdir / name
-    plt.tight_layout()
-    plt.savefig(path, dpi=150)
-    plt.close()
-    return path
-
-def plot_pe_heatmap(pe: np.ndarray, outdir: Path, name: str):
-    # pe: [L, D]
-    plt.figure(figsize=(7, 4))
-    plt.imshow(pe, aspect="auto", interpolation="nearest")
-    plt.xlabel("dim")
-    plt.ylabel("position")
-    plt.title("PE heatmap: PE[pos, dim]")
-    plt.colorbar()
-    return _savefig(outdir, name)
-
-def plot_pe_similarity(pe: np.ndarray, outdir: Path, name: str):
-    x = torch.from_numpy(pe).float()
-    x = x / (x.norm(dim=-1, keepdim=True) + 1e-8)
-    S = (x @ x.T).cpu().numpy()
-    plt.figure(figsize=(5, 5))
-    plt.imshow(S, aspect="auto", interpolation="nearest")
-    plt.title("Cosine similarity between positions")
-    plt.xlabel("j")
-    plt.ylabel("i")
-    plt.colorbar()
-    return _savefig(outdir, name)
-
-def plot_grid_channel(img2d: np.ndarray, outdir: Path, name: str, title: str):
-    plt.figure(figsize=(4, 4))
-    plt.imshow(img2d, interpolation="nearest")
-    plt.title(title)
-    plt.colorbar()
-    return _savefig(outdir, name)
-
-# ----------------------------
-# Tests: SinCos 3D
-# ----------------------------
-
-@pytest.mark.skip(reason="For debugging purposes only")
-def test_sincos_3d_plots(tmp_path):
-    outdir = _get_outdir(tmp_path)
-
-    D = 120
-    Z, Y, X = 6, 8, 10
-    pe = positional_encoding_3d(
-        embed_dim=D,
-        lateral_x_sequence_length=X,
-        lateral_y_sequence_length=Y,
-        axial_sequence_length=Z,
-        temporal_sequence_length=None,
-        cls_token=False,
-    )
-    assert pe.shape == (Z * Y * X, D)
-
-    # Per 2D z-slice: heatmap and cosine similarity over the (Y, X) positions at that z
-    pe_grid = pe.reshape(Z, Y, X, D)  # [Z, Y, X, D]
-    z_slices = [0, Z // 2, Z - 1] if Z >= 3 else list(range(Z))
-    for zi in z_slices:
-        pe_slice = pe_grid[zi].reshape(Y * X, D)  # [Y*X, D]
-        plot_pe_heatmap(pe_slice, outdir, f"sincos_3d_heatmap_z{zi}.png")
-        plot_pe_similarity(pe_slice, outdir, f"sincos_3d_similarity_z{zi}.png")
-
-# ----------------------------
-# Tests: SinCos 4D
-# ----------------------------
-
-@pytest.mark.skip(reason="For debugging purposes only")
-def test_sincos_4d_plots(tmp_path):
-    outdir = _get_outdir(tmp_path)
-
-    D = 128
-    T, Z, Y, X = 3, 4, 6, 5
-    pe = positional_encoding_4d(
-        embed_dim=D,
-        lateral_x_sequence_length=X,
-        lateral_y_sequence_length=Y,
-        axial_sequence_length=Z,
-        temporal_sequence_length=T,
-        cls_token=False,
-    )
-    assert pe.shape == (T * Z * Y * X, D)
-
-    plot_pe_heatmap(pe, outdir, "sincos_4d_heatmap_head.png")
-    plot_pe_similarity(pe, outdir, "sincos_4d_similarity.png")
-
-# --------------------------------------------------------
-# Tests: PositionalEmbeddingSinCos
-# --------------------------------------------------------
-
-@pytest.mark.skip(reason="For debugging purposes only")
-def test_positional_embedding_sincos_queries_plots(tmp_path):
-    outdir = _get_outdir(tmp_path)
-
-    pe = PositionalEmbeddingSinCos(num_pos_feats=16, temperature=10000, normalize=True)
-
-    # ---- 3D query coords: (N, L, 3) ----
-    L = 256
-    coords3 = torch.zeros(1, L, 3, dtype=torch.float32)
-
-    with torch.no_grad():
-        pos3 = pe(coords3)  # (1, L, Dpos)
-
-    pos3_np = pos3[0].cpu().numpy()  # (L, Dpos)
-    plot_pe_heatmap(pos3_np, outdir, "maskdino_sincos_query3_heatmap.png")
-    plot_pe_similarity(pos3_np, outdir, "maskdino_sincos_query3_similarity.png")
-
-    # ---- 6D query coords: (N, L, 6) ----
-    coords6 = torch.zeros(1, L, 6, dtype=torch.float32)
-
-    with torch.no_grad():
-        pos6 = pe(coords6)  # (1, L, Dpos)
-
-    pos6_np = pos6[0].cpu().numpy()  # (L, Dpos)
-    plot_pe_heatmap(pos6_np, outdir, "maskdino_sincos_query6_heatmap.png")
-    plot_pe_similarity(pos6_np, outdir, "maskdino_sincos_query6_similarity.png")
-
-@pytest.mark.skip(reason="For debugging purposes only")
-def test_positional_embedding_sincos_image_plots(tmp_path):
-    outdir = _get_outdir(tmp_path)
-
-    pe = PositionalEmbeddingSinCos(num_pos_feats=16, temperature=10000, normalize=True)
-
-    # Keep small so cosine sim (LxL) is sane
-    N, C, D, H, W = 1, 1, 4, 16, 16
-    x = torch.zeros(N, C, D, H, W, dtype=torch.float32)
-
-    with torch.no_grad():
-        pos = pe(x)  # (N, Cpos, D, H, W)
-
-    # flatten positions -> (L, Cpos) where L = D*H*W
-    pos_flat = pos[0].permute(1, 2, 3, 0).reshape(D * H * W, -1).cpu().numpy()
-    plot_pe_heatmap(pos_flat, outdir, "maskdino_sincos_image_heatmap.png")
-    plot_pe_similarity(pos_flat, outdir, "maskdino_sincos_image_similarity.png")
-
-# --------------------------------------------------------
-# Tests: PositionalEmbeddingRope
-# --------------------------------------------------------
-
-# --------------------------------------------------------
-# RoPE viz helpers (axial)
-# --------------------------------------------------------
-
-def rope_axial_effective_pe_table(
-    freqs_cis: torch.Tensor,
-    head_dim: int,
-    input_fmt: str,
-) -> np.ndarray:
-    assert freqs_cis.is_complex(), "freqs_cis must be complex (from torch.polar)"
-
-    if input_fmt == "ZYXC":
-        axes_in = "XYZ"
-        axes_out = "ZYX"
-        J = head_dim // 6
-        n_axes = 3
-    elif input_fmt == "TZYXC":
-        axes_in = "XYZT"
-        axes_out = "TZYX"
-        J = head_dim // 8
-        n_axes = 4
-    else:
-        raise ValueError(f"Unsupported input_fmt={input_fmt}")
-
-    # freqs_cis: [L, n_axes*J]
-    assert freqs_cis.ndim == 2
-    assert freqs_cis.shape[-1] == n_axes * J, (freqs_cis.shape, n_axes, J)
-
-    # split into axis blocks in axes_in order (X,Y,Z,(T))
-    blocks = torch.split(freqs_cis, J, dim=-1)  # tuple length n_axes, each [L, J]
-    axis_to_block = {ax: blk for ax, blk in zip(axes_in, blocks)}
-
-    # make per-axis [sin, cos] blocks: [L, 2J]
-    def to_sincos_block(blk: torch.Tensor) -> torch.Tensor:
-        # view_as_real: [..., 2] = [real, imag] = [cos, sin]
-        re_im = torch.view_as_real(blk.to(torch.complex64))  # [L, J, 2]
-        cos = re_im[..., 0]
-        sin = re_im[..., 1]
-        return torch.cat([sin, cos], dim=-1)  # [L, 2J]
-
-    out_blocks = [to_sincos_block(axis_to_block[ax]) for ax in axes_out]  # ordered like sincos impl
-    pe = torch.cat(out_blocks, dim=-1)  # [L, head_dim]
-
-    assert pe.shape[-1] == head_dim
-    return pe.cpu().numpy()
-
-# --------------------------------------------------------
-# Tests: Axial RoPE plots
-# --------------------------------------------------------
-
-@pytest.mark.skip(reason="For debugging purposes only")
-def test_rope_axial_zyxc_plots(tmp_path):
-    outdir = _get_outdir(tmp_path)
-
-    Z, Y, X = 4, 8, 8
-    head_dim = 96   # divisible by 6 for ZYXC axial
-    theta = 100.0
-
-    freqs_cis = compute_axial_cis(
-        dim=head_dim,
-        end_x=X,
-        end_y=Y,
-        end_z=Z,
-        end_t=1, # unused for ZYXC but required by signature
-        input_fmt="ZYXC",
-        theta=theta,
-        device="cpu",
-    )  # complex [L, head_dim/2] where L=Z*Y*X
-
-    pe = rope_axial_effective_pe_table(freqs_cis, head_dim=head_dim, input_fmt="ZYXC")  # [L, D]
-
-    plot_pe_heatmap(pe, outdir, "rope_axial_zyxc_heatmap.png")
-    plot_pe_similarity(pe, outdir, "rope_axial_zyxc_similarity.png")
-
-
-@pytest.mark.skip(reason="For debugging purposes only")
-def test_rope_axial_tzyxc_plots(tmp_path):
-    outdir = _get_outdir(tmp_path)
-
-    # keep L reasonable for cosine sim
-    T, Z, Y, X = 2, 2, 8, 8
-    head_dim = 128  # divisible by 8 for TZYXC axial
-    theta = 100.0
-
-    freqs_cis = compute_axial_cis(
-        dim=head_dim,
-        end_x=X,
-        end_y=Y,
-        end_z=Z,
-        end_t=T,
-        input_fmt="TZYXC",
-        theta=theta,
-        device="cpu",
-    )  # complex [L, head_dim/2] where L=T*Z*Y*X
-
-    pe = rope_axial_effective_pe_table(freqs_cis, head_dim=head_dim, input_fmt="TZYXC")  # [L, D]
-
-    plot_pe_heatmap(pe, outdir, "rope_axial_tzyxc_heatmap.png")
-    plot_pe_similarity(pe, outdir, "rope_axial_tzyxc_similarity.png")
-
-# --------------------------------------------------------
-# RoPE viz helpers (mixed; eye-init => predictable)
-# --------------------------------------------------------
-
-def rope_mixed_effective_pe_table(
-    freqs_cis: torch.Tensor,
-    head_dim: int,
-    input_fmt: str,
-) -> np.ndarray:
-    assert freqs_cis.is_complex(), "freqs_cis must be complex (from torch.polar)"
-
-    # pick head 0 if head dimension exists
-    if freqs_cis.ndim == 3:
-        freqs_cis = freqs_cis[0]  # [L, J_total]
-
-    assert freqs_cis.ndim == 2, freqs_cis.shape
-    L, J_total = freqs_cis.shape
-    assert 2 * J_total == head_dim, (freqs_cis.shape, head_dim)
-
-    if input_fmt == "ZYXC":
-        # head_dim = 6J => J_total = 3J
-        J = head_dim // 6
-        axes_in = "XYZ"
-        axes_out = "ZYX"
-        n_axes = 3
-    elif input_fmt == "TZYXC":
-        # head_dim = 8J => J_total = 4J
-        J = head_dim // 8
-        axes_in = "XYZT"
-        axes_out = "TZYX"
-        n_axes = 4
-    else:
-        raise ValueError(f"Unsupported input_fmt={input_fmt}")
-
-    assert J_total == n_axes * J, (J_total, n_axes, J)
-
-    blocks = torch.split(freqs_cis, J, dim=-1)  # n_axes blocks, each [L, J]
-    axis_to_block = {ax: blk for ax, blk in zip(axes_in, blocks)}
-
-    def to_sincos_block(blk: torch.Tensor) -> torch.Tensor:
-        re_im = torch.view_as_real(blk.to(torch.complex64))  # [L, J, 2]
-        cos = re_im[..., 0]
-        sin = re_im[..., 1]
-        return torch.cat([sin, cos], dim=-1)  # [L, 2J]
-
-    out_blocks = [to_sincos_block(axis_to_block[ax]) for ax in axes_out]
-    pe = torch.cat(out_blocks, dim=-1)  # [L, head_dim]
-    return pe.cpu().numpy()
-
-# --------------------------------------------------------
-# Tests: Mixed RoPE plots (eye-init)
-# --------------------------------------------------------
-
-@pytest.mark.skip(reason="For debugging purposes only")
-def test_rope_mixed_zyxc_plots(tmp_path):
-    outdir = _get_outdir(tmp_path)
-
-    Z, Y, X = 4, 8, 8
-    head_dim = 96   # divisible by 6 for ZYXC
-    theta = 100.0
-
-    # grid positions (flattened in X-fastest order)
-    t_t, t_z, t_y, t_x = generate_grid_indices(
-        end_x=X, end_y=Y, end_z=Z,
-        input_fmt="ZYXC",
-        device="cpu",
-        dtype=torch.float32,
-    )
-
-    # frequency spectrum with identity basis per head => predictable blocks
-    freqs = generate_frequency_spectrum(
-        dim=head_dim,
-        num_heads=1,
-        theta=theta,
-        random_rotation_per_head=False,  # <- EYE INIT
-        input_fmt="ZYXC",
-        device="cpu",
-        dtype=torch.float32,
-    )
-
-    freqs_cis = compute_mixed_cis(
-        freqs=freqs,
-        t_x=t_x,
-        t_y=t_y,
-        t_z=t_z,
-        t_t=None,
-        input_fmt="ZYXC",
-    )  # complex [H, L, head_dim/2]
-
-    pe = rope_mixed_effective_pe_table(freqs_cis, head_dim=head_dim, input_fmt="ZYXC")  # [L, D]
-    plot_pe_heatmap(pe, outdir, "rope_mixed_zyxc_heatmap.png")
-    plot_pe_similarity(pe, outdir, "rope_mixed_zyxc_similarity.png")
-
-@pytest.mark.skip(reason="For debugging purposes only")
-def test_rope_mixed_tzyxc_plots(tmp_path):
-    outdir = _get_outdir(tmp_path)
-
-    # keep L reasonable for cosine sim
-    T, Z, Y, X = 2, 2, 8, 8
-    head_dim = 128  # divisible by 8 for TZYXC
-    theta = 100.0
-
-    t_t, t_z, t_y, t_x = generate_grid_indices(
-        end_x=X, end_y=Y, end_z=Z, end_t=T,
-        input_fmt="TZYXC",
-        device="cpu",
-        dtype=torch.float32,
-    )
-
-    freqs = generate_frequency_spectrum(
-        dim=head_dim,
-        num_heads=1,
-        theta=theta,
-        random_rotation_per_head=False,  # <- EYE INIT
-        input_fmt="TZYXC",
-        device="cpu",
-        dtype=torch.float32,
-    )
-
-    freqs_cis = compute_mixed_cis(
-        freqs=freqs,
-        t_x=t_x,
-        t_y=t_y,
-        t_z=t_z,
-        t_t=t_t,
-        input_fmt="TZYXC",
-    )  # complex [H, L, head_dim/2]
-
-    pe = rope_mixed_effective_pe_table(freqs_cis, head_dim=head_dim, input_fmt="TZYXC")  # [L, D]
-    plot_pe_heatmap(pe, outdir, "rope_mixed_tzyxc_heatmap.png")
-    plot_pe_similarity(pe, outdir, "rope_mixed_tzyxc_similarity.png")
 
 
 # --------------------------------------------------------
@@ -734,6 +370,21 @@ def test_rope_position_embedding_deterministic():
     assert torch.allclose(c1, c2)
 
 
+def test_rope_position_embedding_center_token_and_tiling():
+    """Angles are tiled twice across D_head and the grid-centre token carries zero phase."""
+    rpe = RopePositionEmbedding(input_fmt="ZYXC", embed_dim=24, num_heads=1, theta=100.0).eval()
+    sin, cos = rpe((3, 3, 3))  # normalize_coords="separate": coords in {-2/3, 0, 2/3}
+    D = 24
+    assert sin.shape == cos.shape == (27, D)
+    assert torch.allclose(sin ** 2 + cos ** 2, torch.ones_like(sin), atol=1e-6)
+    # angles are tile(2)'d: first and second half identical
+    assert torch.equal(sin[:, : D // 2], sin[:, D // 2 :]) and torch.equal(cos[:, : D // 2], cos[:, D // 2 :])
+    # center token (z=y=x=1 -> coord 0) has zero phase
+    c = 1 * 9 + 1 * 3 + 1
+    assert torch.allclose(sin[c], torch.zeros(D), atol=1e-6) and torch.allclose(cos[c], torch.ones(D), atol=1e-6)
+    assert not torch.allclose(sin[0], torch.zeros(D))
+
+
 # --------------------------------------------------------
 # Tests: PositionEmbeddingRandom
 # --------------------------------------------------------
@@ -755,3 +406,108 @@ def test_position_embedding_random_forward_with_coords():
     coords = torch.rand(1, 5, 3)
     out = per.forward_with_coords(coords, image_size=(4, 8, 8))
     assert out.shape == (1, 5, 32)
+
+
+# ------------------------------------------------------
+# PositionEmbeddingRandom: prompt PE vs dense grid PE
+# ------------------------------------------------------
+
+
+def test_position_embedding_random_prompt_pe_matches_dense_grid_at_voxel_center():
+    """A prompt coordinate at a voxel's center (x+0.5, y+0.5, z+0.5) gets the
+    same embedding as that voxel in the dense grid PE."""
+    torch.manual_seed(0)
+    Z, Y, X = 4, 6, 8
+    enc = PositionEmbeddingRandom(input_fmt="ZYXC", num_pos_feats=16, time_separable=False)
+    dense = enc((Z, Y, X))  # (C, Z, Y, X)
+
+    voxels = [(0, 0, 0), (1, 2, 3), (3, 5, 7), (2, 0, 5)]
+    # samplers emit (x, y, z); +0.5 puts the prompt at the voxel center, which
+    # is where the dense grid's PE is evaluated
+    coords = torch.tensor(
+        [[(x + 0.5, y + 0.5, z + 0.5) for (z, y, x) in voxels]], dtype=torch.float32
+    )
+    prompt = enc.forward_with_coords(coords, (Z, Y, X))[0]  # (N, C)
+    for i, (z, y, x) in enumerate(voxels):
+        torch.testing.assert_close(prompt[i], dense[:, z, y, x], atol=1e-5, rtol=1e-5)
+
+
+# ------------------------------------------------------
+# compute_axial_cis: input_fmt validation
+# ------------------------------------------------------
+
+
+def test_compute_axial_cis_rejects_unknown_input_fmt():
+    """An unsupported layout string raises instead of silently falling through."""
+    with pytest.raises(ValueError, match="input_fmt"):
+        compute_axial_cis(dim=24, end_x=2, end_y=2, end_z=2, end_t=2,
+                          input_fmt="XYZT", device="cpu")
+
+
+def test_compute_axial_cis_zyxc_emits_one_row_per_position():
+    """ZYXC with a 2x2x2 grid yields 8 frequency rows (one per position)."""
+    out = compute_axial_cis(dim=24, end_x=2, end_y=2, end_z=2, end_t=1,
+                            input_fmt="ZYXC", device="cpu")
+    assert out.shape[0] == 8
+
+
+# ------------------------------------------------------
+# apply_rope: per-side tuple branch and the k-only twin
+# ------------------------------------------------------
+
+
+def _rand_freqs_cis(n, jf, seed):
+    g = torch.Generator().manual_seed(seed)
+    angles = torch.rand(n, jf, generator=g) * 6.28
+    return torch.polar(torch.ones(n, jf), angles)
+
+
+def test_apply_rope_per_side_tuple_matches_v1_selection():
+    """apply_rope with a (freqs_q, freqs_k) tuple equals rotating q with freqs_q
+    and k with freqs_k through apply_rope_v1, bit for bit."""
+    B, H, N, D = 2, 2, 6, 8
+    g = torch.Generator().manual_seed(0)
+    q = torch.randn(B, H, N, D, generator=g)
+    k = torch.randn(B, H, N, D, generator=g)
+    fq = _rand_freqs_cis(N, D // 2, seed=1)
+    fk = _rand_freqs_cis(N, D // 2, seed=2)
+
+    q_new, k_new = apply_rope(q, k, (fq, fk), rope_type="axial")
+    q_old = apply_rope_v1(q, k, fq)[0]
+    k_old = apply_rope_v1(q, k, fk)[1]
+    torch.testing.assert_close(q_new, q_old, rtol=0, atol=0)
+    torch.testing.assert_close(k_new, k_old, rtol=0, atol=0)
+
+
+def test_apply_rope_none_side_passes_through_unrotated():
+    """A None entry in the per-side tuple leaves that side untouched while the
+    other side is rotated."""
+    B, H, N, D = 1, 2, 4, 8
+    q = torch.randn(B, H, N, D)
+    k = torch.randn(B, H, N, D)
+    f = _rand_freqs_cis(N, D // 2, seed=3)
+
+    q_rope, k_same = apply_rope(q, k, (f, None), rope_type="axial")
+    assert torch.equal(k_same, k)
+    assert not torch.equal(q_rope, q)
+
+    q_same, k_rope = apply_rope(q, k, (None, f), rope_type="axial")
+    assert torch.equal(q_same, q)
+    assert not torch.equal(k_rope, k)
+
+
+def test_apply_rope_v2_k_only_matches_v2_and_keeps_prefix_tokens():
+    """_apply_rope_v2_k_only rotates k exactly like apply_rope_v2's k output and
+    leaves the leading prefix tokens (those without sin/cos rows) unrotated."""
+    B, H, N, D, prefix = 2, 2, 6, 8, 2
+    g = torch.Generator().manual_seed(4)
+    q = torch.randn(B, H, N, D, generator=g)
+    k = torch.randn(B, H, N, D, generator=g)
+    sin = torch.rand(N - prefix, D, generator=g)
+    cos = torch.rand(N - prefix, D, generator=g)
+
+    k_only = _apply_rope_v2_k_only(k, (sin, cos))
+    k_ref = apply_rope_v2(q, k, (sin, cos))[1]
+    torch.testing.assert_close(k_only, k_ref, rtol=0, atol=0)
+    torch.testing.assert_close(k_only[:, :, :prefix, :], k[:, :, :prefix, :], rtol=0, atol=0)
+    assert not torch.equal(k_only[:, :, prefix:, :], k[:, :, prefix:, :])

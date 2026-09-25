@@ -4,7 +4,7 @@ https://github.com/facebookresearch/hiera/blob/main/hiera/hiera_mae.py
 """
 
 import math
-from typing import Dict, Any, Literal, Optional, List, Union
+from typing import Dict, Any, Literal, Optional, List, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -12,6 +12,30 @@ import torch.nn as nn
 from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.backbones.encoder import Encoder
 from cell_observatory_platform.models.layers.utils import get_reference_points
+
+
+def _mu_raster_perms(
+    mu_grid: tuple, tok_in_mu: tuple, device: torch.device
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Permutations between the MU-major token order (token id = mu_index *
+    tok_in_mu_prod + intra, the decoder-sequence layout) and the raster order
+    over the full token grid (the layout FlashDeformAttn3D's ``spatial_shapes``
+    contract assumes).
+
+    Returns:
+        gather: ``raster_seq = mu_seq[:, gather]`` — MU-major ids in raster order.
+        idmap:  ``raster_pos = idmap[mu_major_id]`` — inverse of ``gather``.
+    """
+    D = len(mu_grid)
+    n_tok = int(math.prod(mu_grid)) * int(math.prod(tok_in_mu))
+    ids = torch.arange(n_tok, device=device).view(*mu_grid, *tok_in_mu)
+    perm = []
+    for i in range(D):  # interleave (mu_i, tok_i) per axis -> raster walk
+        perm += [i, D + i]
+    gather = ids.permute(perm).reshape(-1)
+    idmap = torch.empty_like(gather)
+    idmap[gather] = torch.arange(n_tok, device=device)
+    return gather, idmap
 
 
 class MaskedHieraPredictor(nn.Module):
@@ -91,6 +115,7 @@ class MaskedHieraPredictor(nn.Module):
         self._level_tok_in_mu = []
         self._level_tok_in_mu_prod = []
         self._level_num_tokens = []
+        self._level_mu_grid = []
         for spec in self.decoder_specs:
             tim = tuple(int(x) for x in spec["tok_in_mu"])
             mg = tuple(int(x) for x in spec["mu_grid"])
@@ -98,6 +123,13 @@ class MaskedHieraPredictor(nn.Module):
             self._level_tok_in_mu.append(tim)
             self._level_tok_in_mu_prod.append(int(math.prod(tim)))
             self._level_num_tokens.append(int(math.prod(mg) * math.prod(tim)))
+            self._level_mu_grid.append(mg)
+
+        # MU-major <-> raster permutations, cached per (mu_grid, tok_in_mu, device):
+        # the decoder sequences are MU-major but FlashDeformAttn3D's
+        # spatial_shapes contract is raster — conversion happens at the DA
+        # boundary (see _forward_list / _forward).
+        self._mu_raster_cache: Dict[tuple, Tuple[torch.Tensor, torch.Tensor]] = {}
 
         # Per-level modules
         self.decoder_embeds = nn.ModuleList([
@@ -195,31 +227,45 @@ class MaskedHieraPredictor(nn.Module):
         pp = pixels_per_patch
         sub = patches_per_token_shape
 
-        full_tok = tuple(mu_grid[d] * tok_in_mu[d] for d in range(D))
-        
-        expected_N = int(math.prod(full_tok))
+        expected_N = int(math.prod(mu_grid)) * int(math.prod(tok_in_mu))
         expected_K = int(math.prod(sub) * pp)
         if N != expected_N or K != expected_K:
             raise ValueError(f"_tokens_to_patch_tokens: N={N} vs {expected_N}, K={K} vs {expected_K}")
 
-        # [B, N, sub_prod*pp] -> [B, *full_tok, *sub, pp]
-        x = x.view(B, *full_tok, *sub, pp)
+        # The sequence is MU-major (token = mu_id * tok_in_mu_prod + intra, see
+        # _scatter_context_to_full_sequence), so factor N as (mu_grid, tok_in_mu)
+        # — NOT as a raster full-token grid: for mu_grid > 1 on any non-slowest
+        # axis, viewing N as raster pairs every prediction with the wrong patch.
+        # [B, N, sub_prod*pp] -> [B, *mu_grid, *tok_in_mu, *sub, pp]
+        x = x.view(B, *mu_grid, *tok_in_mu, *sub, pp)
 
-        # Interleave (full_tok_i, sub_i) per axis
-        # current: [B, full0..full{D-1}, sub0..sub{D-1}, pp]
-        # want:    [B, full0, sub0, full1, sub1, ..., pp]
+        # Interleave (mu_i, tok_i, sub_i) per axis: the patch coordinate along
+        # axis d is mu_d * (tok_in_mu_d * sub_d) + tok_d * sub_d + sub_d_idx —
+        # the raster patch grid the MSE targets (apply_masks raster patch
+        # indices) use.
+        # current: [B, mu0..mu{D-1}, tok0..tok{D-1}, sub0..sub{D-1}, pp]
+        # want:    [B, mu0, tok0, sub0, mu1, tok1, sub1, ..., pp]
         perm = [0]
-        full_start = 1
-        sub_start = 1 + D
+        mu_start, tok_start, sub_start = 1, 1 + D, 1 + 2 * D
         for i in range(D):
-            perm += [full_start + i, sub_start + i]
-        perm += [1 + 2 * D]  # pp
+            perm += [mu_start + i, tok_start + i, sub_start + i]
+        perm += [1 + 3 * D]  # pp
 
         x = x.permute(perm).contiguous()
 
-        patch_grid = [full_tok[i] * sub[i] for i in range(D)]
+        patch_grid = [mu_grid[i] * tok_in_mu[i] * sub[i] for i in range(D)]
         x = x.view(B, *patch_grid, pp)
         return x.view(B, int(math.prod(patch_grid)), pp)
+
+    def _get_mu_raster_perms(
+        self, mu_grid: tuple, tok_in_mu: tuple, device: torch.device
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        key = (tuple(mu_grid), tuple(tok_in_mu), str(device))
+        perms = self._mu_raster_cache.get(key)
+        if perms is None:
+            perms = _mu_raster_perms(tuple(mu_grid), tuple(tok_in_mu), device)
+            self._mu_raster_cache[key] = perms
+        return perms
 
     def _build_spatial_kwargs(
         self,
@@ -264,7 +310,14 @@ class MaskedHieraPredictor(nn.Module):
         x = x_seq + self.decoder_pos_embeds[-1]
         if self.level_embed is not None:
             x = x + self.level_embed[-1].view(1, 1, -1)
-        x = self.decoder(x, masks=None, pos_enc=None, spatial_kwargs=spatial_kwargs)
+        if self.use_deformable_attn:
+            # MU-major -> raster for the DA kernel, back after (see _forward_list).
+            gather, idmap = self._get_mu_raster_perms(self.mu_grid, self.tok_in_mu, x.device)
+            x = x[:, gather]
+            x = self.decoder(x, masks=None, pos_enc=None, spatial_kwargs=spatial_kwargs)
+            x = x[:, idmap]
+        else:
+            x = self.decoder(x, masks=None, pos_enc=None, spatial_kwargs=spatial_kwargs)
         x = self.decoder_norm(x)
         x = self.decoder_pred(x)
         if self.prediction_mode == "pixels":
@@ -327,9 +380,28 @@ class MaskedHieraPredictor(nn.Module):
 
         sp_kw = self._build_spatial_kwargs(self.decoder_specs, device, B)
 
+        # MU-major <-> raster conversion at the DA boundary: spatial_shapes
+        # declares raster full-token grids, but the sequences built above are
+        # MU-major — feeding them (or MU-major token ids) straight into the
+        # deformable kernel makes every query sample around the wrong location
+        # over scrambled memory.
+        level_perms = None
+        if self.use_deformable_attn:
+            level_perms = [
+                self._get_mu_raster_perms(
+                    self._level_mu_grid[lvl], self._level_tok_in_mu[lvl], device
+                )
+                for lvl in range(self.num_levels)
+            ]
+
         # Build decoder inputs
         if self.target_only_predictor:
-            # DA cross-attn consumes dense value maps as memory
+            # DA cross-attn consumes dense value maps as memory — reorder each
+            # level to raster so the kernel's volume interpretation is correct.
+            if level_perms is not None:
+                value_maps = [
+                    vm[:, level_perms[lvl][0]] for lvl, vm in enumerate(value_maps)
+                ]
             sp_kw["value_maps"] = value_maps
             sp_kw["tgt_idx_list"] = tgt_idx_list
             sp_kw["value_flatten"] = torch.cat(value_maps, dim=1)
@@ -341,7 +413,7 @@ class MaskedHieraPredictor(nn.Module):
 
             # full_ref: [B, sum(full_len), n_levels, 3]
             full_ref = get_reference_points(spatial_shapes, valid_ratios, device=device)
-            
+
             ref_parts = []
             offset = 0
             n_levels = spatial_shapes.shape[0]
@@ -354,6 +426,10 @@ class MaskedHieraPredictor(nn.Module):
                 if idx.dim() == 1:
                     idx = idx.unsqueeze(0).expand(B, -1)
                 idx = idx.to(device=device, dtype=torch.long)
+                if level_perms is not None:
+                    # full_ref walks the RASTER grid; tgt ids are MU-major —
+                    # map to raster positions before gathering.
+                    idx = level_perms[i][1][idx]
                 idx_exp = idx[:, :, None, None].expand(-1, -1, n_levels, 3)
                 ref_parts.append(level_ref.gather(1, idx_exp))
             # reference_points: [B, sum(Ntgt), n_levels, 3]
@@ -376,9 +452,20 @@ class MaskedHieraPredictor(nn.Module):
                 q = q + self.level_embed[lvl].view(1, 1, -1)
                 x_list.append(q)
         else:
-            x_list = value_maps
+            # Self-DA over the full sequences: run the decoder in RASTER order
+            # (queries, reference points and values then agree with
+            # spatial_shapes); outputs are converted back to MU-major below so
+            # the external contract (MU-major ids everywhere else) holds.
+            if level_perms is not None:
+                x_list = [vm[:, level_perms[lvl][0]] for lvl, vm in enumerate(value_maps)]
+            else:
+                x_list = value_maps
 
         out_list = self.decoder(x_list, masks=None, pos_enc=None, spatial_kwargs=sp_kw)
+
+        if level_perms is not None and not self.target_only_predictor:
+            # raster -> MU-major: out_mu[mu_id] = out_raster[idmap[mu_id]]
+            out_list = [out[:, level_perms[lvl][1]] for lvl, out in enumerate(out_list)]
 
         outputs: List[torch.Tensor] = []
         for lvl, out in enumerate(out_list):
@@ -407,7 +494,11 @@ class MaskedHieraPredictor(nn.Module):
         return self.decoder.get_num_layers()
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("head", "hiera_decoder")
 def BUILD(cfg) -> "MaskedHieraPredictor":
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     kwargs = {k: v for k, v in cfg.items() if k not in ignore}
     return MaskedHieraPredictor(**kwargs)

@@ -1,0 +1,53 @@
+# @package _global_
+# Stage 2 ablation base: the Stage-0 recipe at the Stage-1 lr (2e-4) on a 6-epoch schedule (the lr sweep plateaued by
+# epoch ~6), warm-up 1 epoch, cosine to 5 %, full 128x384x512 set with a 2 % validation split, same seed for every run.
+# Leaves change ONE thing each (channel parametrisation / channel dropout / interaction protocol). Plan: plans/stage2_ablations.md.
+defaults:
+  - /experiments/janelia/sam2_study/recipe/recipe_r1
+  - _self_
+
+experiment_name: sam2_abl
+wandb_project: sam2_study
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/stage2_ablations/${experiment_name}
+
+datasets: {split: 0.02}
+schedulers: {epochs: 6, warmup: 1, cooldown: 0, cos_min_ratio: 0.05}
+optimizers:
+  lr: 2e-4
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+evaluation: {val_begin: 0, val_interval: 1}
+trainer_loop: {iteration_mode: epoch, checkpoint_every_n_epochs: 1, with_perf_metrics: false}
+clusters: {worker_nodes: 1, gpus_per_worker: 8, batch_size: 64, timelimit: "04:00", chain_jobs: 6}   # 6 x 2.4 h = 14.5 h -> 4 links + spares
+loggers:
+  event_writers:
+    - name: local
+      save_dir: ${loggers.logdir}
+      step_scalars_prefix: step_logbook
+      epoch_scalars_prefix: epoch_logbook
+      scalars_save_format: csv
+    - name: wandb
+      project: ${wandb_project}
+      dir: ${loggers.logdir}
+      run_name: ${experiment_name}
+      tags: [sam2_study, stage2]
+      id: ${experiment_name}   # one W&B run across all chained jobs
+      resume_from: allow
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: TORCHTITAN
+    time_interval: 55m
+  - name: best_checkpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - name: best_metric_saver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

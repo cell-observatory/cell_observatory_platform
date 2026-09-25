@@ -53,10 +53,23 @@ CASES_4D = [
 # -----------------------------------------------------------------------------
 
 
+_AXES = {
+    MULTICHANNEL_HYPERCUBE.CZYX: ("C", "Z", "Y", "X"),
+    MULTICHANNEL_HYPERCUBE.ZYXC: ("Z", "Y", "X", "C"),
+    MULTICHANNEL_HYPERCUBE.CTYX: ("C", "T", "Y", "X"),
+    MULTICHANNEL_HYPERCUBE.TYXC: ("T", "Y", "X", "C"),
+    MULTICHANNEL_HYPERCUBE.CTZYX: ("C", "T", "Z", "Y", "X"),
+    MULTICHANNEL_HYPERCUBE.TZYXC: ("T", "Z", "Y", "X", "C"),
+}
+
+
 @pytest.mark.parametrize("layout, shape_nb, shape_b, has_t", CASES_3D + CASES_4D)
 def test_axes_property(layout, shape_nb, shape_b, has_t):
-    assert isinstance(layout.axes, tuple)
-    assert "".join(layout.axes) == layout.value
+    """`axes` is the literal per-layout axis tuple: one entry per unbatched dim,
+    containing "T" exactly for the temporal layouts."""
+    assert layout.axes == _AXES[layout]
+    assert len(layout.axes) == len(shape_nb)
+    assert ("T" in layout.axes) is has_t
 
 
 @pytest.mark.parametrize("layout, shape_nb, shape_b, has_t", CASES_3D)

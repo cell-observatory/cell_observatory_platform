@@ -1,0 +1,165 @@
+# @package _global_
+# Torch-native (FSDP2 + optional FP8 + compile) variant of test.yaml:
+# swaps /deepspeed/zeroN -> /parallelism/mae, /checkpoint/checkpoint ->
+# /checkpoint/checkpoint_dcp, DS LAMB -> timm LAMB, adds
+# /trainer/torch_native_trainer, and flips the hook backends to TORCHTITAN.
+defaults:
+  - /paths/coreweave
+  - /hydra/overrides
+  - /clusters/coreweave_h100
+  - /datasets/pretrain_dataset_ray
+  - /models/meta_arch/mae/large
+  - /checkpoint/checkpoint_dcp # DCP (step-<N> dirs, reshard-safe)
+  - /loggers/loggers
+  - /evaluation/base_evaluator
+  - /parallelism/mae # FSDP2 degrees, mixed precision, quantize, comm
+  - /trainer/torch_native_trainer # backend/trainer/trainer_loop
+  - /optimizers/lamb_torch # timm LAMB (torch-native)
+  - /schedulers/warmup_cosine_decay_torch # step-based WSD via LRSchedulersContainer
+  - /optimizations/models/mae/large
+  - /optimizations/optimizations
+  - /profiling/profiling
+  - _self_
+
+# experiment name (used for logging)
+experiment_name: mae_large_torch_native_fsdp2
+wandb_project: testing
+
+# distributed framework
+distributed_framework: ray
+
+run_type: single_run # single_run, multi_run, or tune
+job_type: train # train or test
+
+# loop per worker script
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+# training quantization
+quantization: bfloat16
+dataset_dtype: bfloat16
+storage_dtype: uint16
+dataset_layout_order: ZYXC
+
+# overrides
+# --------------------------------------------------------------------------------
+
+trainer_loop:
+  iteration_mode: epoch # or: step (+ max_steps / val_every_n_steps)
+  checkpoint_every_n_epochs: 1
+  with_perf_metrics: false
+
+parallelism:
+  quantize:
+    enable: false # flip on for FP8 linears on H100/H200 (SM89+ enforced)
+    backend: float8
+    recipe: tensorwise
+    fsdp_float8_all_gather: true
+    filter_fqns: []
+
+clusters:
+  batch_size: 320 # total batch size
+  worker_nodes: 1
+  gpus_per_worker: 8
+  cpus_per_gpu: 12
+  mem_per_cpu: 40000
+  ray_queue_memory: 0.2
+
+paths:
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+datasets:
+  batch_size: ${clusters.batch_size_per_gpu}
+  input_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 256, 2]
+  patch_shape: [16, 16, 16, null]
+  occupancy_threshold: 0.9
+
+  split: 0.1
+  return_dataloader: true
+  distributed_sampler: true
+
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  max_hypercubes: 20000
+
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
+  databases:
+    occupancy_threshold_filter_type: "min_ch0"
+    synthetic_only: false
+    has_annotations: false
+    with_hypercubes_dataframe: true
+    mask_channel_idx: null
+
+
+  preserve_order: false
+  callback_strategy: grpc # grpc, queue
+  async_device_copy: false
+
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "random"
+
+        random_masking_ratio: 0.7
+
+schedulers:
+  epochs: 2
+
+models:
+  meta_arch:
+    mae:
+      abs_sincos_enc: true
+      rope_pos_enc: false
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
+      with_auxiliary_loss: true
+      loss_fn:
+        loss_type: "fourier_loss"
+        alpha: 0.001
+        fft_loss: "l1_masked"
+        spatial_loss: "l2_masked"
+        input_fmt: ${dataset_layout_order}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        embed_dim: ${models.meta_arch.mae.embed_dim}
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-3
+
+# hooks (backend: TORCHTITAN flips lr/wd/checkpoint hooks to the torch-native branches)
+hooks:
+  hooks_list:
+    - name: free_device_buffer
+    - name: anomaly_detector
+    - name: lr_scheduler
+      backend: TORCHTITAN
+    - name: iteration_timer
+    - name: periodic_writer
+    - name: periodic_checkpointer
+      backend: TORCHTITAN
+    - name: best_checkpointer
+      backend: TORCHTITAN
+      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+    - name: torch_memory_stats
+      step_period: 1
+      epoch_period: 1
+      logdir: ${loggers.logdir}
+    - name: best_metric_saver
+      metric_name: ${evaluation.val_metric}
+      compare_fn: ${evaluation.val_mode}
+      eval_after_validation: true

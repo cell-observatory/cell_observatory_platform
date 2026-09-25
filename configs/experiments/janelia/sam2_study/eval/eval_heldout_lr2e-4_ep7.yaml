@@ -1,0 +1,69 @@
+# @package _global_
+# Held-out instance-segmentation mAP of the Stage-1 winner (lr 2e-4) on a fixed tile set: the recipe's data pipeline
+# (PSF + noise, uniform click sampling at eval, 128x384x512, corrupt-tile exclusions) + the test overlay (job_type test,
+# TestTrainer, unprompted automatic mask generation -> sam2_instance_evaluator), one LSF b300 node, 1 cube per GPU.
+#
+# Checkpoint: the run's live checkpoints dir; DCPCheckpointManager.load_for_eval takes the LATEST step-*/ that holds a
+# .metadata file (step-26922 = end of epoch 7 on 2026-09-09 16:13; keep_latest_k 3, so the latest moves while the run
+# trains -- copy the step dir out for a reproducible number, as eval/README.md says). Same architecture as the run: DCP
+# loads model.state_dict() keys 1:1, no ckpt_translate_map (DCPCheckpointManager has no such argument).
+#
+# Data: the ONLY tile allow-list the query builder offers is datasets.tile_list, matched against the DB column tile_name,
+# which is the grid basename ("000x_004y_003z.zarr") and is shared by every ROI with that grid position. The names below
+# were chosen from sam2_study/zarr_scan/tiles_c512_c1024.txt so that each name occurs in at most two ROIs; the union is
+# 18 tiles in 4 ROIs of 4 acquisitions (the DB may add a tile only if a ROI outside that scan carries one of the names):
+#   20250303_mem_histone/fish10_48hpf/roi1_ear_brain_neuromast/000x_00{0,1,2,3,4}y_003z.zarr   (5 tiles)
+#   20250317_mem_histone/fish4_24hpf/roi1_eye/000x_00{0,1,2,3}y_003z.zarr                        (4 tiles)
+#   20251222_mem-histone/fish2_72hpf/roi1/000x_03{3,4,5,6}y_000z.zarr                            (4 tiles)
+#   20251212_mem-histone/fish2_72hpf/roi1/000x_034y_000z.zarr, 000x_03{3,4,5,6}y_002z.zarr       (5 tiles)
+# CAVEAT -- NOT held out: the Stage-1 runs trained on split 0.02 of every annotated cube, so ~98 % of these cubes were
+# training samples. This is an in-distribution, seen-cube evaluation until the tile-disjoint set of plan D3 exists:
+# add these 4 ROI directories to datasets.databases.exclude_tile_path_patterns of the training configs, then select them
+# here by datasets.roi_ids (query the DB for the ids; roi_ids + tile_list AND together) or by a path allow-list filter.
+# Rows: max_rows 512, seeded random subset over all timepoints of the 18 tiles (~40 cubes per tile over all timepoints,
+# so timepoint_list [0] would leave far fewer than 512 rows); 64 cubes per GPU at ~5.5 s each ~ 6 min + ~6 min start-up.
+# Output: <outdir>/logs/scalars/epoch_logbook.csv, columns epoch_loss/test/<key>_median with keys mask_map, mask_miou,
+# mask_match_recall, box_map, box_miou, box_match_recall, box_f1, pred_iou_eval/{iou_head_n,iou_head_mae,iou_head_rmse,
+# iou_head_pearson,iou_head_spearman,true_miou@T,precision@T,coverage@T,map_rank_score,map_rank_prediou,
+# map_rank_score_x_prediou,selection_auc_score,selection_auc_prediou}. Table: python scripts/utils/eval_table.py <outdir>.
+defaults:
+  - /experiments/janelia/sam2_study/recipe/recipe_r1
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+
+experiment_name: eval_heldout_lr2e-4_ep7
+
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/sam2_lr/sam2_study/01_lr/lr_sweep_optimizers_lr_0p0002/checkpoints
+
+clusters:                     # one b300 node via LSF (the overlay's local launcher is for an interactive allocation)
+  launcher_type: lsf
+  worker_nodes: 1
+  gpus_per_worker: 8
+  batch_size: 8               # 1 per GPU: AMG encodes one volume per call
+  timelimit: "00:30"
+  chain_jobs: 1
+
+datasets:
+  split: 0.0                  # the tile list defines the set; no train/val split of it
+  eval_split: train           # TestTrainer iterates the (single) loader over the tile_list rows
+  tile_list:
+    - 000x_000y_003z.zarr
+    - 000x_001y_003z.zarr
+    - 000x_002y_003z.zarr
+    - 000x_003y_003z.zarr
+    - 000x_004y_003z.zarr
+    - 000x_033y_000z.zarr
+    - 000x_034y_000z.zarr
+    - 000x_035y_000z.zarr
+    - 000x_036y_000z.zarr
+    - 000x_033y_002z.zarr
+    - 000x_034y_002z.zarr
+    - 000x_035y_002z.zarr
+    - 000x_036y_002z.zarr
+  timepoint_list: null
+  max_rows: 512
+  row_sample_seed: ${seed}    # seeded subset across the tiles instead of the first 512 rows in key order (= one tile)
+
+trainer_loop:
+  max_steps: 64               # cubes per GPU: 512 / 8 ranks (the loader ends earlier if the tiles hold fewer rows)

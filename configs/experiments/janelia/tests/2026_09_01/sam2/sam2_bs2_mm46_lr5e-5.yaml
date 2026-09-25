@@ -1,0 +1,17 @@
+# @package _global_
+# Sweep point bs2_mm46_lr5e-5: 2 cube(s)/GPU x 8 B300, max_masks 46, lr 5e-5.
+defaults:
+  - base_sam2_torch
+  - _self_
+
+experiment_name: sam2_b300_torch_bs2_mm46_lr5e-5
+
+clusters:
+  batch_size: 16 # 2 per GPU x 8 GPUs (torch-native: no grad accumulation)
+
+datasets:
+  preprocessor:
+    max_masks: 46
+
+optimizers:
+  lr: 5e-5

@@ -1,0 +1,5 @@
+# @package _global_
+# D: sample the correction click from the ground truth with probability 0.3 (recipe: 0.1).
+defaults: [/experiments/janelia/sam2_study/stage2_ablations/abl_base, _self_]
+experiment_name: abl_D_gtprob0p3
+models: {meta_arch: {sam: {prob_to_sample_from_gt_for_train: 0.3}}}

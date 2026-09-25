@@ -1,5 +1,5 @@
 # Transformer
-BUILD: cell_observatory_platform.models.heads.plain_detr_transformer.BUILD
+name: plain_detr
 d_model: 384
 nheads: 8
 num_feature_levels: 1

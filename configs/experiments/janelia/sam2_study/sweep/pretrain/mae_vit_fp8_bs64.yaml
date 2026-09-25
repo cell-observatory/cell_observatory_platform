@@ -1,0 +1,5 @@
+# @package _global_
+# Lever: MX-FP8 linears (B300). MAE dims are multiples of 32 and random masking keeps activation rows at B*1536 / B*4608.
+defaults: [/experiments/janelia/sam2_study/sweep/pretrain/mae_vit_base, _self_]
+experiment_name: mae_vit_fp8_bs64
+parallelism: {quantize: {enable: true, backend: mx, recipe: mxfp8_cublas, filter_fqns: [], include_fqns: []}}

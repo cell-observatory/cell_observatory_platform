@@ -235,9 +235,8 @@ class InteractionBlock(nn.Module):
         self, features, query, reference_points, spatial_shapes, level_start_index, query_level_shapes, query_offsets
     ):
         assert query.shape[1] == reference_points.shape[1]  # Len_q match
-        assert spatial_shapes.prod(1).sum().item() == features.shape[1]  # Len_v match
 
-        c = self.extractor(
+        query = self.extractor(
             query=query,
             reference_points=reference_points,
             features=features,
@@ -507,22 +506,26 @@ class EncoderAdapter(nn.Module):
             ]
         )
 
-        if self.dim == 3 and self.strategy == "axial":
-            self.up_spatial = nn.ConvTranspose3d(self.embed_dim, self.embed_dim, 2, 2)
-        else:
+        if not (self.dim == 3 and self.strategy == "axial"):
             raise ValueError(
                 f"Only Dim=3 with axial strategy is supported, " f"got dim={self.dim}, strategy={self.strategy}."
             )
+        # NOTE: no up_spatial ConvTranspose. f1 is emitted at c1's native
+        # stride-4 resolution (reference ViT-Adapter semantics: c1 = up(c2) + c1
+        # at stride 4); the previous ConvTranspose emitted a stride-2 map that
+        # contradicted the declared stride and cost ~4.3 GB bf16/sample.
 
         self.norm1 = nn.SyncBatchNorm(self.embed_dim)
         self.norm2 = nn.SyncBatchNorm(self.embed_dim)
         self.norm3 = nn.SyncBatchNorm(self.embed_dim)
         self.norm4 = nn.SyncBatchNorm(self.embed_dim)
 
+        self._init_model_weights(buffer_device=buffer_device)
+        # FlashDeformAttn3D already ran _reset_parameters() in its __init__, but
+        # _init_model_weights just trunc-normal'd its Linears — restore the
+        # deformable-specific init LAST so it is not clobbered.
         if self.use_deform_attention:
             self.apply(self._init_deform_weights)
-
-        self._init_model_weights(buffer_device=buffer_device)
 
     def _init_model_weights(self, buffer_device: str | None = None):
         def _init_weights(m):
@@ -551,12 +554,11 @@ class EncoderAdapter(nn.Module):
                 if m.bias is not None:
                     m.bias.data.zero_()
 
-        if not (hasattr(self, "up_spatial") and hasattr(self, "spatial_prior_module") and hasattr(self, "adapter_block")):
+        if not (hasattr(self, "spatial_prior_module") and hasattr(self, "adapter_block")):
             raise ValueError(
                 "vit_adapter init: expected model to have attributes "
-                "`up_spatial`, `spatial_prior_module`, and `adapter_block`."
+                "`spatial_prior_module` and `adapter_block`."
             )
-        self.up_spatial.apply(_init_weights)
         self.spatial_prior_module.apply(_init_weights)
         self.adapter_block.apply(_init_weights)
         torch.nn.init.normal_(self.level_embed)
@@ -574,32 +576,24 @@ class EncoderAdapter(nn.Module):
                 return (t, z, y, x)
         raise ValueError(f"Bad stride spec for '{key}': {val}")
 
-    def _get_cum_strides_per_stage(self, last_key: str):
-        st = sz = sy = sx = 1
-        for k in self._spm_module_order:
-            if k in self.spatial_prior_module_strides:
-                t_, z_, y_, x_ = self._get_stride(k, self.spatial_prior_module_strides[k])
-                st *= t_
-                sz *= z_
-                sy *= y_
-                sx *= x_
-            if k == last_key:
-                break
-        return (st, sz, sy, sx)
-
     def _level_shapes_from_strides(self):
-        if self.dim == 3:
-            Z, Y, X = self.spatial_shape
-            shapes = []
-            for key in self._spm_level_keys:
-                _, sz, sy, sx = self._get_cum_strides_per_stage(key)
-                z = max(Z // sz, 1)
-                y = max(Y // sy, 1)
-                x = max(X // sx, 1)
-                shapes.append((z, y, x))
-            return shapes
-        else:
+        if self.dim != 3:
             raise ValueError(f"Unsupported dim: {self.dim}")
+        # Every SPM conv/pool is k=3, p=1, so each stage emits ceil(in / stride)
+        # (NOT floor): out = floor((in + 2*1 - 3) / s) + 1 = ceil(in / s).
+        # Floor-division from cumulative strides predicted e.g. 12^3 where the
+        # SPM emits 13^3 tokens at a 100^3 input, crashing the cat/view.
+        z, y, x = self.spatial_shape
+        shapes = []
+        for key in self._spm_module_order:
+            if key in self.spatial_prior_module_strides:
+                _, sz, sy, sx = self._get_stride(key, self.spatial_prior_module_strides[key])
+                z = max(-(-z // sz), 1)
+                y = max(-(-y // sy), 1)
+                x = max(-(-x // sx), 1)
+            if key in self._spm_level_keys:
+                shapes.append((int(z), int(y), int(x)))
+        return shapes
 
     def _get_query_metadata(self):
 
@@ -711,7 +705,10 @@ class EncoderAdapter(nn.Module):
             x_lin = torch.linspace(0.5, X - 0.5, X, device=device, dtype=self.dtype) / float(X)
 
             zz, yy, xx = torch.meshgrid(z_lin, y_lin, x_lin, indexing="ij")
-            ref = torch.stack([zz, yy, xx], dim=-1)  # (Z, Y, X, 3), bf16
+            # FlashDeformAttn3D consumes (x, y, z) reference points — see
+            # get_reference_points in layers/utils.py and the
+            # spatial_shapes[..., [2,1,0]] normalization in layers/attention.py.
+            ref = torch.stack([xx, yy, zz], dim=-1)  # (Z, Y, X, 3), (x, y, z) order
             ref = ref.reshape(1, -1, 1, 3)  # (1, Z*Y*X, 1, 3)
             ref_list.append(ref)
 
@@ -758,6 +755,15 @@ class EncoderAdapter(nn.Module):
             raise ValueError(f"Unsupported dim: {dim}")
 
     def forward(self, x, features):
+        # channels-last contract: (B, Z, Y, X, C). Fail loud rather than scramble
+        # tokens if a caller hands conv layout (B, C, Z, Y, X) -- the permute below
+        # would silently feed the spatial prior module a transposed tensor.
+        if self.dim == 3 and x.shape[-1] != self.in_channels:
+            raise ValueError(
+                f"EncoderAdapter expects channels-last input (..., C={self.in_channels}); "
+                f"got trailing dim {x.shape[-1]} for shape {tuple(x.shape)}. "
+                "Callers with conv layout must convert first (see SAMBackbone._to_adapter_layout)."
+            )
         reference_points, spatial_shapes, level_start_index, valid_ratios = self._get_deformable_and_ffn_metadata(x)
 
         # apply spatial prior module
@@ -799,7 +805,11 @@ class EncoderAdapter(nn.Module):
 
         if self.dim == 3:
             c1 = c1.transpose(1, 2).view(bs, dim, *self.query_level_shapes[0]).contiguous()
-            c1 = self.up_spatial(c1)
+            # Reference ViT-Adapter: c1 = up(c2) + c1 at stride 4. Fuse the
+            # refined c2 into c1 at c1's OWN resolution instead of transposed-
+            # convolving c1 up to stride 2 (which contradicted the declared
+            # stride-4 output and materialized a huge unused activation).
+            c1 = c1 + F.interpolate(c2, size=c1.shape[2:], mode="trilinear", align_corners=False)
 
         if self.add_vit_feature:
             if self.dim == 3:
@@ -827,7 +837,7 @@ class EncoderAdapter(nn.Module):
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(EncoderAdapter.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD", "input_channels"}
+    ignore = {"_target_", "BUILD", "name", "input_channels"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -837,6 +847,10 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("adapter", "vit_adapter")
 def BUILD(adapter_args: dict):
     adapter_args = dict(adapter_args)  # make a copy
 

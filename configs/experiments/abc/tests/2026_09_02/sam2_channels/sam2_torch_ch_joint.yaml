@@ -1,0 +1,12 @@
+# @package _global_
+# A0 baseline: joint linear patch embed (config default), no dropout.
+# 128^3 cubes (cod_20260902), ViT-L single-scale, torch-native; 128 seeded rows, 16 steps.
+defaults:
+  - /experiments/abc/tests/2026_09_01/sam2/base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_ch_joint
+
+datasets:
+  max_rows: 128
+  row_sample_seed: 42

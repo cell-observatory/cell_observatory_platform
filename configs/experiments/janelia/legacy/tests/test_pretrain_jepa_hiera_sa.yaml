@@ -1,0 +1,123 @@
+# @package _global_
+defaults:
+  - /paths/janelia
+  - /hydra/overrides
+  - /clusters/local
+  - /datasets/databases/base_database
+  - /datasets/preprocessor/ray_preprocessor
+  - /datasets/pretrain_dataset_ray
+  - /datasets/masking/mask_generator
+  - /models/meta_arch/jepa/large_hiera_da
+  - /checkpoint/checkpoint
+  - /loggers/loggers
+  - /evaluation/base_evaluator
+  - /deepspeed/zero2
+  - /optimizers/adamw_torch
+  - /schedulers/warmup_cosine_decay
+  - /optimizations/models/jepa/large_hiera
+  - /optimizations/optimizations
+  - /profiling/profiling
+  - _self_
+
+experiment_name: test_pretrain_jepa_hiera_sa
+wandb_project: testing
+
+backend: DEEPSPEED
+distributed_framework: ray
+run_type: single_run
+job_type: train
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+quantization: bfloat16
+dataset_dtype: bfloat16
+storage_dtype: uint16
+dataset_layout_order: ZYXC
+seed: 42
+
+clusters:
+  # batch_size: 1280 # 72-80
+  batch_size: 72
+  worker_nodes: 1
+  # gpus_per_worker: 8
+  gpus_per_worker: 4
+  cpus_per_gpu: 12
+  mem_per_cpu: 40000
+  ray_queue_memory: 0.2
+
+paths:
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+datasets:
+  batch_size: ${clusters.batch_size_per_gpu}
+  input_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 256, 2]
+  patch_shape: [8, 8, 8, null]
+
+  occupancy_threshold: 0.9
+  split: 0.0
+
+  return_dataloader: true
+  distributed_sampler: true
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  max_hypercubes: 6000
+
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
+  databases:
+    occupancy_threshold_filter_type: 'min_ch0'
+    cdf_target: 90
+    cdf_threshold: 150
+    synthetic_only: false
+    has_annotations: false
+    with_hypercubes_dataframe: true
+    mask_channel: null
+
+
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+        lateral_mask_scale: [0.7, 0.9]
+        axial_mask_scale: [0.7, 0.9]
+        aspect_ratio_scale_hw: [0.75, 1.5]
+        num_blocks: 2
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "hiera_mu"
+        mask_unit_size: [1, 8, 8, 8]
+        q_stride: [1, 2, 2, 2]
+        q_pool: 2
+        skip_patch_mask_generation: true
+        multiscale: true
+
+models:
+  meta_arch:
+    jepa:
+      multiscale: true
+      use_deformable_attn: false
+      multiscale_out_dim: 256
+
+schedulers:
+  epochs: 2
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-3
+
+hooks:
+  hooks_list:
+    - name: free_device_buffer
+    - name: lr_scheduler
+      backend: DEEPSPEED
+    - name: iteration_timer
+    - name: periodic_writer

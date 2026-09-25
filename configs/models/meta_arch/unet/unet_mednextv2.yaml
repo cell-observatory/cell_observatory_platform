@@ -1,24 +1,23 @@
-BUILD: cell_observatory_platform.models.meta_arch.UNet.BUILD
+# @package models
+model: unet
 
-backbone_wrapper_args: ${models.backbones.mednext}
+meta_arch:
+  unet:
+    backbone_wrapper_args: ${models.backbones.mednext}
 
-# NOTE: no adapter multi-scale features for UNET
-# Adapter
-adapter_args: null
+    # NOTE: no adapter multi-scale features for UNET
+    adapter_args: null
+    transformer_args: null
 
-# Transformer
-transformer_args: null
-
-# Criterion
-criterion_args:
-  BUILD: cell_observatory_platform.training.losses.MultiLabelBinaryPredictionLoss
-  loss_dict:
-    sigmoid_ce_loss: {}
-    dice_loss: {}
-  loss_weight_dict:
-    sigmoid_ce_loss: 1.0
-    dice_loss: 1.0
-  num_classes: 2
-  num_points: 20000
-  oversample_ratio: 3.0
-  importance_sample_ratio: 0.75
+    # Criterion (fixed child: built directly in UNet.BUILD, not via the registry)
+    criterion_args:
+      loss_dict:
+        sigmoid_ce_loss: {}
+        dice_loss: {}
+      loss_weight_dict:
+        sigmoid_ce_loss: 1.0
+        dice_loss: 1.0
+      num_classes: 2
+      num_points: 20000
+      oversample_ratio: 3.0
+      importance_sample_ratio: 0.75

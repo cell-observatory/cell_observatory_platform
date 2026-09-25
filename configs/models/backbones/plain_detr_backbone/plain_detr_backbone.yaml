@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.backbones.plain_detr_backbone.BUILD
+name: plain_detr
 backbone_embed_dims: 
   - ${models.backbones.masked_encoder.embed_dim} # [1024, 1024, 1024, 1024]x4 if using all layers
 train_backbone: true

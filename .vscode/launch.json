@@ -155,6 +155,28 @@
       "justMyCode": false
     },
     {
+      "name": "🗂️ tests/inference",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/inference/"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
       "name": "🪏 tests/utils/test_context",
       "type": "debugpy",
       "request": "launch",
@@ -309,28 +331,6 @@
       "justMyCode": false
     },
     {
-      "name": "🧪 tests/data/test_data_samples",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_data_samples.py"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
       "name": "🧪 tests/data/test_data_shapes",
       "type": "debugpy",
       "request": "launch",
@@ -344,28 +344,6 @@
         "--color=yes",
         "-r fEX",
         "tests/data/test_data_shapes.py"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_image_list",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_image_list.py"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -397,6 +375,29 @@
       "justMyCode": false
     },
     {
+      "name": "🧪 tests/data/test_local_databases",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "--run-localdb",
+        "tests/data/test_local_databases.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
       "name": "🧪 tests/data/test_pretrain_dataset_ray",
       "type": "debugpy",
       "request": "launch",
@@ -410,490 +411,6 @@
         "--color=yes",
         "-r fEX",
         "tests/data/test_pretrain_dataset_ray.py"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_all_database_tables",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_all_database_tables"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_all_database_views",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_all_database_views"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_table",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_table"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_abc_data",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_abc_data"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_prfs_data",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_prfs_data"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_aws_data",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_aws_data"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_1_128_128_128_2_hypercubes_database",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_1_128_128_128_2_hypercubes_database"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_local_vs_prod_hypercubes_database",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_local_vs_prod_hypercubes_database"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_aggregate_hypercubes",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_aggregate_hypercubes"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_hypercubes_max_roi_filter",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_hypercubes_max_roi_filter"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_hypercubes_occ_filter",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_hypercubes_occ_filter"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_hypercubes_cdf_filter",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_hypercubes_cdf_filter"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_hypercubes_synthetic_filter",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_hypercubes_synthetic_filter"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_hypercubes_annotations_filter",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_hypercubes_annotations_filter"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_hypercubes_max_hypercubes_filter",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_hypercubes_max_hypercubes_filter"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_hypercubes_list_roi_filter",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_hypercubes_list_roi_filter"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_hypercubes_list_tiles_filter",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_hypercubes_list_tiles_filter"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_with_filters",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_with_filters"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_csv_dataframe",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_csv_dataframe"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_database.py::test_synthetic_annotations_csv_dataframe",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_database.py::test_synthetic_annotations_csv_dataframe"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -1004,28 +521,6 @@
         "--color=yes",
         "-r fEX",
         "tests/models/test_transformer.py"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🛠️ tests/models/test_get_param_groups",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/models/test_get_param_groups.py"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",

@@ -1,0 +1,169 @@
+# @package _global_
+defaults:
+  - /paths/coreweave                    # configs/paths/coreweave.yaml
+  - /hydra/overrides                    # configs/hydra/overrides.yaml (not working)
+  - /clusters/coreweave_h200            # configs/clusters/coreweave_h200.yaml
+  - /datasets/pretrain_dataset_ray      # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/meta_arch/jepa/large        # configs/models/jepa/large.yaml
+  - /checkpoint/checkpoint              # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers                    # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator          # configs/evaluation/base_evaluator.yaml
+  - /deepspeed/zero2                    # configs/deepspeed/zero2.yaml
+  - /optimizers/lamb_jepa               # configs/optimizers/lamb.yaml
+  - /schedulers/warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/optimizations        # configs/optimizations/optimizations.yaml
+  - /optimizations/models/jepa/large # configs/optimizations/models/jepa/large.yaml
+  - /profiling/profiling
+  - _self_
+
+# experiment name (used for logging)
+experiment_name: jepa_large_128x256x256_300_epoch_lr_0p00001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_h200
+wandb_project: pretraining_3d_v2
+
+backend: DEEPSPEED
+
+# distributed framework
+distributed_framework: ray
+
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
+# job type
+job_type: train # train or test
+
+# trainer type
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+
+# loop per worker script
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+# training quantization
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
+
+# dtype for training data
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
+
+# dataset layout in the zarr files
+dataset_layout_order: ZYXC
+
+# overrides
+# --------------------------------------------------------------------------------
+
+# clusters
+clusters:
+  batch_size: 4608 # total batch size
+  worker_nodes: 4 # number of worker nodes
+  gpus_per_worker: 8 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
+  mem_per_cpu: 40000 # ram per cpu core
+  ray_queue_memory: 0.2
+
+#paths:
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
+  pretrained_checkpointdir: null
+
+# data
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  input_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 256, 2]
+  patch_shape: [16, 16, 16, null]
+  occupancy_threshold: 0.9
+
+  split: 0.1
+  return_dataloader: true
+  distributed_sampler: true
+
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  max_hypercubes: 1000000
+
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
+  databases:
+    occupancy_threshold_filter_type: 'min_ch0'
+    synthetic_only: false
+    has_annotations: false
+    with_hypercubes_dataframe: true
+    mask_channel_idx: null
+
+
+  preserve_order: false # only matters for TP
+  callback_strategy: grpc # grpc, queue
+  async_device_copy: false
+
+  # NOTE:
+  # need to try (lateral, axial) masking ratios of:
+  # ((0.7, 0.8), (0.7, 0.8)), [0.6-0.75]
+  # ((0.7, 0.9), (0.7, 0.9)), [0.75-0.85]
+  # ((0.8, 0.9), (0.8, 0.9)), [0.7-0.9]
+  # ((0.9, 0.9), (0.9, 0.9)), [0.75-0.9]
+  # ((1.0, 1.0), (0.7, 0.7)), [0.75-0.9]
+
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+
+        lateral_mask_scale: [0.7, 0.9]
+        axial_mask_scale: [0.7, 0.9]
+        # temporal_mask_scale: 0.5 # not used
+        aspect_ratio_scale_hw: [0.75, 1.5]
+        num_blocks: 2
+
+        random_masking_ratio: 0.75 # not used
+
+        channels_to_mask: null
+        time_downsample_pattern: null
+        mask_mode: 
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "blocked"
+
+# ROPE axial
+models:
+  meta_arch:
+    jepa:
+      abs_sincos_enc: false
+      rope_pos_enc: true
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
+
+# schedulers
+schedulers:
+  epochs: 300
+  warmup: 30
+  cooldown: 15
+
+optimizers:
+  wd:  ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-5
+
+# hooks
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: DEEPSPEED
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: DEEPSPEED
+  - name: best_checkpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - name: best_metric_saver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

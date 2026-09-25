@@ -1,0 +1,7 @@
+# @package _global_
+# Permutation: deepspeed backend, cube mode (128^3), ViT-L single-scale. Base settings.
+defaults:
+  - base_sam2_deepspeed
+  - _self_
+
+experiment_name: sam2_abc_deepspeed_single_cube_128

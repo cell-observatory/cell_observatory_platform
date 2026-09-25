@@ -1,0 +1,9 @@
+# @package _global_
+# Stage 1.5 gate: the 128x384x512-trained lr 2e-4 epoch-6 checkpoint scored ZERO-SHOT on 128x384x1024 DB cubes (the model is built at the wider shape; the checkpoint load drops only the positional-embedding buffer -- check the [CheckpointManager] Dropped line). Compare with eval_lr_0p0002 at 512 (its native shape) and with tile_adapt after the adaptation run.
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_c1024_bs4
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_lr_0p0002_ep6_zeroshot_c1024
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/lr_0p0002/checkpoints

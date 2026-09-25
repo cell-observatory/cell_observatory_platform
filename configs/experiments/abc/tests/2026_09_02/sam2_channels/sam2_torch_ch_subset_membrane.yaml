@@ -1,0 +1,17 @@
+# @package _global_
+# A3: membrane-only input (C=1) on the joint embed.
+# 128^3 cubes (cod_20260902), ViT-L single-scale, torch-native; 128 seeded rows, 16 steps.
+defaults:
+  - /experiments/abc/tests/2026_09_01/sam2/base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_ch_subset_membrane
+
+datasets:
+  max_rows: 128
+  row_sample_seed: 42
+  selected_channel_localizations: [membrane]
+  train_shape: [1, 128, 128, 128, 1]
+  input_shape: [1, 128, 128, 128, 2] # 1 signal + mask
+  mask_channel_idx: 1
+

@@ -1,59 +1,61 @@
-BUILD: cell_observatory_platform.models.meta_arch.maskdino.BUILD
+# @package models
+model: maskdino
 
-# Backbone config (MAE)
-backbone_wrapper_args: ${models.backbones.maskdino_backbone}
+meta_arch:
+  maskdino:
 
-# Backbone adapter
-# adapter_args: ${models.adapters}
+    # Backbone config (MAE)
+    backbone_wrapper_args: ${models.backbones.maskdino_backbone}
 
-adapter_args: null
+    # Backbone adapter
+    # adapter_args: ${models.adapters}
 
-# Pixel decoder (MaskDINOEncoder)
-pixel_decoder_args: ${models.heads.pixel_decoder}
+    adapter_args: null
 
-# Query decoder (MaskDINODecoder)
-decoder_args: ${models.heads.maskdino_decoder}
+    # Pixel decoder (MaskDINOEncoder)
+    pixel_decoder_args: ${models.heads.pixel_decoder}
 
-# Matcher
-matcher_args:
-  BUILD: cell_observatory_platform.models.utils.matchers.HungarianMatcher.BUILD
-  cost_classification: 4.0
-  cost_mask: 5.0
-  cost_mask_dice: 5.0
-  num_points: 20000
-  cost_box: 5.0
-  cost_box_giou: 2.0
+    # Query decoder (MaskDINODecoder)
+    decoder_args: ${models.heads.maskdino_decoder}
 
-# Criterion
-criterion_args:
-  BUILD: cell_observatory_platform.training.losses.MaskDINO_DETR_Set_Loss.BUILD
-  num_classes: 1
-  num_points: 20000
-  loss_weight_dict:
-    loss_ce: 4.0
-    loss_bbox: 5.0
-    loss_giou: 2.0
-    loss_mask: 5.0
-    loss_dice: 5.0
-  no_object_loss_weight: 0.1
-  losses: ["labels", "boxes", "masks"]
-  oversample_ratio: 3.0
-  importance_sample_ratio: 0.75
-  denoise: true
-  with_segmentation: true
-  denoise_losses: ["labels", "boxes", "masks"]
-  semantic_ce_loss: false
-  focal_alpha: 0.25
+    # Matcher
+    matcher_args:
+      cost_classification: 4.0
+      cost_mask: 5.0
+      cost_mask_dice: 5.0
+      num_points: 20000
+      cost_box: 5.0
+      cost_box_giou: 2.0
 
-# Training flags (passed directly into MaskDINO ctor)
-instance_segmentation_flag: true
-topk_per_image: 100
-focus_on_boxes: false
+    # Criterion
+    criterion_args:
+      num_classes: 1
+      num_points: 20000
+      loss_weight_dict:
+        loss_ce: 4.0
+        loss_bbox: 5.0
+        loss_giou: 2.0
+        loss_mask: 5.0
+        loss_dice: 5.0
+      no_object_loss_weight: 0.1
+      losses: ["labels", "boxes", "masks"]
+      oversample_ratio: 3.0
+      importance_sample_ratio: 0.75
+      denoise: true
+      with_segmentation: true
+      denoise_losses: ["labels", "boxes", "masks"]
+      semantic_ce_loss: false
+      focal_alpha: 0.25
 
-# How to pick number of points?
-# Find the mask logit resolution loss samples from.
-# E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
-# Sample ~5–20% of that grid:
-# 5% → ~13k
-# 10% → ~26k
-# 20% → ~52k
+    # Training flags (passed directly into MaskDINO ctor)
+    instance_segmentation_flag: true
+    topk_per_image: 100
+    focus_on_boxes: false
+
+    # How to pick number of points?
+    # Find the mask logit resolution loss samples from.
+    # E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
+    # Sample ~5–20% of that grid:
+    # 5% → ~13k
+    # 10% → ~26k
+    # 20% → ~52k

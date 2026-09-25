@@ -461,7 +461,7 @@ class DPTHead(nn.Module):
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(DPTHead.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -471,6 +471,10 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("head", "dense_predictor")
 def BUILD(cfg: Mapping[str, Any]) -> DPTHead:
     """
     Hydra entrypoint for DPTHead.

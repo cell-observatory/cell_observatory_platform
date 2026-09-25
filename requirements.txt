@@ -15,6 +15,7 @@ pytest>=9.0.2  # needed because old pytest is installed in the base image
 pytorchvideo==0.1.5
 ray[all]==2.54.0
 scikit-image==0.26.0
+scipy==1.16.3  #todo remove when scipy.spatial is fixed in latest version
 seaborn==0.13.2
 supabase==2.28.0
 tensorstore==0.1.81

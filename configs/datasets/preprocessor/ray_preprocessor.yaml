@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.RayPreprocessor
+name: ray
 
 dtype: ${quantization}
 with_masking: true
@@ -11,3 +11,9 @@ transforms_list:
     input_layout:
       _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
       value: ${dataset_layout_order}
+# Channel-token ids for the channel-adaptive patch embed (models.meta_arch.<mae|jepa>
+# patch_embed_type: channel_adaptive). null -> no ids are emitted. Set by data/channel_vocab.py
+# at dataloader construction (same table the encoder sizes its embeddings from).
+channel_vocab: null
+unknown_policy: error # error | unk: a token missing from the vocab at TRAIN time (inference always maps to <unk>)
+unk_token_p: 0.0 # training only: replace each (channel, kind) id by <unk> with this probability so the <unk> rows are trained

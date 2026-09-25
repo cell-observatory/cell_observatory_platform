@@ -1,0 +1,11 @@
+name: lamb_torch # timm.optim.Lamb — torch-native LAMB (no DeepSpeed FusedLamb)
+lr: 5e-3 # initial learning rate
+wd: 5e-4 # initial weight decay
+ld: null # optional layer decay
+clip_grad: 0.5
+betas: [0.9, 0.99]
+eps: 1e-08
+
+get_param_groups_extra:
+  enc_layer_decay: 1.0 # default no layer decay; use 0.75 for MAE-style decay
+  dec_layer_decay: 1.0 # default no layer decay

@@ -1,0 +1,28 @@
+# @package _global_
+# Step mode, S3: resume S2's step-40 checkpoint (mid-epoch: 8 steps into epoch 2)
+# and extend the budget to 56. Expect: start_iter 40 / start_epoch 2, "mid-epoch
+# resume: skipping 8 batches of epoch 2", steps 41-48 finish epoch 2, epoch 3
+# runs 49-56, checkpoints at 50 and 56 (last step) in THIS run's outdir.
+# Caveat by design: the cosine horizon is rebuilt from the new max_steps (56), so
+# the LR at step 41 is the 56-step schedule's value, not a continuation of the
+# 40-step curve.
+defaults:
+  - /experiments/abc/tests/2026_09_01/sam2/base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_step_resume_40to56
+
+paths:
+  resume_checkpointdir: ${paths.data_path}/testing/sam2_abc_torch_step_40_ckpt10/checkpoints
+
+datasets:
+  max_rows: 128
+  row_sample_seed: 42
+
+trainer_loop:
+  iteration_mode: step
+  max_steps: 56
+  val_every_n_steps: null
+  checkpoint_save_period: 10
+  checkpoint_every_n_epochs: null
+  with_perf_metrics: false

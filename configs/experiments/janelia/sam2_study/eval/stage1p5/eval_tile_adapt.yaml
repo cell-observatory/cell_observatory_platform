@@ -1,0 +1,9 @@
+# @package _global_
+# Stage 1.5: the adapted checkpoint at 128x384x1024 (plan: stage1p5_tile_plan.md section 3).
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_c1024_bs4
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_tile_adapt
+paths:
+  pretrained_checkpointdir: null   # the tile_adapt run's checkpoint dir (stage1p5_tile/tile_adapt, to be written) -- its training config replaces sweep/sam2_c1024_bs4 in defaults

@@ -15,7 +15,6 @@ from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding, make_axial_rope_freqs
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -217,7 +216,9 @@ class ViT(nn.Module):
             input_fmt=input_fmt,
             input_shape=input_shape,
             patch_shape=self.patch_shape,
-            mlp_wide_silu=mlp_wide_silu,
+            # Encoder's parameter is `wide_silu`; the old `mlp_wide_silu=` kwarg
+            # was silently swallowed, so wide-SiLU configs never took effect.
+            wide_silu=mlp_wide_silu,
             dtype=dtype,
         )
 
@@ -280,7 +281,10 @@ class ViT(nn.Module):
             )
             return num_patches
 
-    def pool(self, x, pool_type=None, num_prefix_tokens=1):
+    def pool(self, x, pool_type=None, num_prefix_tokens=0):
+        # This ViT has NO cls/prefix token (pure PatchEmbedding): the previous
+        # default of 1 made timm's global_pool_nlc average x[:, 1:], silently
+        # dropping the first patch token from every pooled output.
         if self.att_pool is not None:
             x = self.att_pool(x)
             return x

@@ -1,0 +1,8 @@
+# @package _global_
+# 10-min gate: 1024 rows, 25 % validation, 2 epochs, 15-min link, short timeouts.
+defaults: [/experiments/janelia/sam2_study/stage2_ablations/D_clicks3, _self_]
+experiment_name: abl_mini_clicks3
+datasets: {max_rows: 1024, split: 0.25, collate_fn: {slot_wait_timeout_s: 300}}
+schedulers: {epochs: 2, warmup: 1}
+clusters: {timelimit: 00:15, chain_jobs: 1}
+parallelism: {comm: {train_timeout_seconds: 120}}

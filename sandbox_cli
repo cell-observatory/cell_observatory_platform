@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+
+CO_IMAGE="${CO_IMAGE:-ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01}"
+
+DOCKER_ARGS=(
+  --rm
+  --network host
+  --pull missing
+  --env-file "$ROOT/.env"
+  -e PYTHONUNBUFFERED=1
+  -v "$ROOT:/workspace/cell_observatory_platform"
+  -w /workspace/cell_observatory_platform
+  --entrypoint ""
+)
+
+if [[ "${1:-}" == "build" || "${1:-}" == "run" || "${1:-}" == "clone" || "${1:-}" == "snapshot" || "${1:-}" == "sync" ]]; then
+  DOCKER_ARGS+=(
+    --privileged
+    --security-opt seccomp=unconfined
+    --security-opt apparmor=unconfined
+    --device /dev/fuse
+  )
+fi
+
+exec docker run "${DOCKER_ARGS[@]}" \
+  "$CO_IMAGE" \
+  python scripts/db/sandbox_cli.py "$@"

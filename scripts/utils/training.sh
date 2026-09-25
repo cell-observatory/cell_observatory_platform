@@ -33,6 +33,23 @@
 # CFG="benchmarks/janelia/exp_10_22_2025_mae_3d_batch_size.yaml"
 # CFG="experiments/janelia/exp_10_22_2025_hparam_sweep_mae/input_size_128x128x128_X_lr_X_masking_sweep.yaml"
 
+# CFG="experiments/janelia/tests/test_dino_pretrain.yaml"
+# CFG="experiments/janelia/tests/test_sam2.yaml"
+# CFG="experiments/janelia/tests/test_sam2_dist.yaml"
+
+# CFG="experiments/janelia/tests/test_pretrain_mae_hiera.yaml"
+# CFG="experiments/janelia/tests/test_pretrain_jepa_hiera.yaml"
+# CFG="experiments/janelia/tests/test_maskdino_hiera.yaml"
+# CFG="experiments/janelia/tests/test_sam2_hiera.yaml"
+
+# CFG="experiments/janelia/tests/test_pretrain_mae_hiera_da.yaml"
+# CFG="experiments/janelia/tests/test_pretrain_jepa_hiera_da.yaml"
+# CFG="experiments/janelia/tests/test_pretrain_jepa_hiera_sa.yaml"
+
+# CFG="experiments/janelia/tests/test_1_jepa_hiera_da.yaml"
+
+CFG="experiments/janelia/tests/test_sam2_dist.yaml"
+
 # Janelia
 # python3 /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}
 
@@ -246,7 +263,7 @@
 
 # CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_mae_masking_0p7_denoise_lr_0p001_no_denoise_w_aux_loss.yaml"
 
-CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_mae_masking_0p7_denoise_lr_0p001_denoise_w_aux_loss.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_mae_masking_0p7_denoise_lr_0p001_denoise_w_aux_loss.yaml"
 
 # CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/maskDINO_mae_masking_0p7_no_rope_lr_0p001.yaml"
 

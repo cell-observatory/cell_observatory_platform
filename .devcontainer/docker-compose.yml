@@ -38,4 +38,4 @@ services:
         hard: 67108864
     stdin_open: true
     tty: true
-    command: /bin/bash -l
+    command: /usr/bin/zsh -l

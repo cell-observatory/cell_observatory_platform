@@ -1,0 +1,28 @@
+defaults:
+  - _self_
+
+# torch-native (DCP) checkpointing for TorchNativeTrainer.
+# Layout: <save_checkpointdir>/step-<N>/ DCP shards + checkpoint_meta.json.
+# Reshard-safe: runs may resume on a different world size.
+
+resume_run: false # whether to resume from a previous run
+
+# used by Ray Report
+ray_checkpoint_config:
+  num_to_keep: 3
+  checkpoint_score_attribute: best_loss
+  checkpoint_score_order: ${evaluation.val_mode} # 'min' or 'max'
+
+checkpoint_manager:
+  _target_: cell_observatory_platform.training.checkpoint.DCPCheckpointManager
+  save_checkpointdir: ${paths.outdir}/checkpoints
+  resume_checkpointdir: ${paths.resume_checkpointdir}
+  pretrained_checkpointdir: ${paths.pretrained_checkpointdir}
+  keep_latest_k: 3
+  # None -> load optimizer state only when resuming
+  load_optimizer: null
+  # save cadence (in optimizer steps) is injected by the trainer from
+  # trainer_loop.checkpoint_save_period / checkpoint_every_n_epochs
+# Wall-clock cadence (e.g. a hard 4h job limit) is set on the hook, independent of the above:
+#   hooks.hooks_list: - name: periodic_checkpointer
+#                       time_interval: 3h30m   # (job time limit - startup - save time)

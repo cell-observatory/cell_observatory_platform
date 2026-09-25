@@ -14,6 +14,24 @@ from cell_observatory_platform.models.layers.utils import point_sample, point_sa
 from cell_observatory_platform.models.ops.losses import batch_dice_loss, batch_sigmoid_ce_loss
 
 
+def _assign_batched(cost_mats):
+    """scipy assignment over per-image cost matrices with ONE device->host
+    transfer (per-image .cpu() in the loop serialized B syncs per step) and a
+    nan_to_num guard: scipy hard-crashes on a NaN/inf cost from a diverging
+    step -- clamp so it surfaces as a (bad) match + loss spike instead.
+    """
+    if not cost_mats:
+        return []
+    flat = torch.cat([c.reshape(-1) for c in cost_mats])
+    flat = torch.nan_to_num(flat, nan=1e6, posinf=1e6, neginf=-1e6).cpu()
+    out, offset = [], 0
+    for c in cost_mats:
+        n = c.numel()
+        out.append(linear_sum_assignment(flat[offset:offset + n].reshape(c.shape).numpy()))
+        offset += n
+    return out
+
+
 class HungarianMatcher(nn.Module):
     """
     Computes an assignment between targets and model predictions.
@@ -52,7 +70,7 @@ class HungarianMatcher(nn.Module):
         self.num_points = num_points
 
     @torch.no_grad()
-    def forward(self, outputs, targets, costs=["cls", "box", "mask"], alpha=0.25, gamma=2.0):
+    def forward(self, outputs, targets, costs=("cls", "box", "mask"), alpha=0.25, gamma=2.0):
         """
         Args:
             outputs: Dict that contains at least the following entries:
@@ -73,7 +91,7 @@ class HungarianMatcher(nn.Module):
         """
         batch_size, num_queries = outputs["pred_logits"].shape[:2]
 
-        matched_masks = []
+        cost_mats = []
         for batch_idx in range(batch_size):
             predicted_bboxes = outputs["pred_boxes"][batch_idx]
             if "box" in costs:
@@ -137,33 +155,6 @@ class HungarianMatcher(nn.Module):
                     cost_mask = batch_sigmoid_ce_loss(predicted_sampled, target_sampled)
                     cost_mask_dice = batch_dice_loss(predicted_sampled, target_sampled)
 
-                # =============================================================
-                # NOTE: Legacy binary mask-based sampling 
-                # =============================================================                
-                # # predicted_masks/target_masks: [num_queries, 1, D_pred, H_pred, W_pred]
-                # # NOTE: gt masks are already padded when preparing targets
-                # target_masks = (targets[batch_idx]["masks"].unsqueeze(1)).to(predicted_masks)
-                # # all masks share the same set of points for efficient matching
-                # # point_ccords: (1, num_points, 3)
-                # point_coords = torch.rand(1, self.num_points, 3, device=predicted_masks.device)
-                # # target_masks: (num_target_masks, num_points)
-                # target_masks = point_sample(
-                #     target_masks,
-                #     # repeat point_coords for each target mask in the batch
-                #     point_coords.repeat(target_masks.shape[0], 1, 1),
-                #     align_corners=False,
-                # ).squeeze(1)
-                # predicted_masks = point_sample(
-                #     predicted_masks,
-                #     point_coords.repeat(predicted_masks.shape[0], 1, 1),
-                #     align_corners=False,
-                # ).squeeze(1)
-                # with autocast(enabled=False, device_type="cuda"):
-                #     predicted_masks, target_masks = predicted_masks.float(), target_masks.float()
-                #     # returns: (N, 0) if we have N predictions or (0, M) if we have M targets
-                #     cost_mask = batch_sigmoid_ce_loss(predicted_masks, target_masks)
-                #     cost_mask_dice = batch_dice_loss(predicted_masks, target_masks)                    
-
             else:
                 cost_mask = torch.tensor(0).to(predicted_bboxes)
                 cost_mask_dice = torch.tensor(0).to(predicted_bboxes)
@@ -175,12 +166,12 @@ class HungarianMatcher(nn.Module):
                 + self.cost_box * cost_bbox
                 + self.cost_box_giou * cost_box_giou
             )
-            # C: (num_queries, num_target_boxes)
-            C = C.reshape(num_queries, -1).cpu()
-            # TODO: migrate to different linear_sum_assignment implementation that 
-            # does not require the cpu-only version
-            matched_masks.append(linear_sum_assignment(C))
+            # C: (num_queries, num_target_boxes) -- keep on device; transferred
+            # in ONE batched copy below (a per-image .cpu() here serialized B
+            # device->host syncs per step).
+            cost_mats.append(C.reshape(num_queries, -1))
 
+        matched_masks = _assign_batched(cost_mats)
         return [
             (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in matched_masks
         ]
@@ -222,7 +213,7 @@ class Mask2FormerHungarianMatcher(nn.Module):
         """More memory-friendly matching"""
         bs, num_queries = outputs["pred_logits"].shape[:2]
 
-        indices = []
+        cost_mats = []
 
         # Iterate through batch size
         for b in range(bs):
@@ -245,8 +236,9 @@ class Mask2FormerHungarianMatcher(nn.Module):
             point_coords = torch.rand(1, self.num_points, 3, device=out_mask.device)
             # get gt labels
             tgt_mask = point_sample(
-                tgt_mask,
-                point_coords.repeat(tgt_mask.shape[0], 1, 1),
+                input=tgt_mask,
+                point_coords=point_coords.repeat(tgt_mask.shape[0], 1, 1),
+                mode="nearest", # default is bilinear; need nearest for GT binary labels
                 align_corners=False,
             ).squeeze(1)
 
@@ -271,10 +263,10 @@ class Mask2FormerHungarianMatcher(nn.Module):
                 + self.cost_classification * cost_classification
                 + self.cost_mask_dice * cost_mask_dice
             )
-            C = C.reshape(num_queries, -1).cpu()
+            # keep on device; ONE batched transfer below (see _assign_batched)
+            cost_mats.append(C.reshape(num_queries, -1))
 
-            indices.append(linear_sum_assignment(C))
-
+        indices = _assign_batched(cost_mats)
         return [
             (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
             for i, j in indices
@@ -354,7 +346,8 @@ class PlainDETRHungarianMatcher(nn.Module):
         )
 
         C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
-        C = C.view(bs, num_queries, -1).cpu()
+        # de-NaN before scipy (hard-crash on NaN from a diverging step)
+        C = torch.nan_to_num(C, nan=1e6, posinf=1e6, neginf=-1e6).view(bs, num_queries, -1).cpu()
 
         # [B,Q, SUM_i T_i] -> [B, Q, T_i] -> [Q,T_i] -> list of B [(index_i, index_j)] for each q in Q
         sizes = [len(v["boxes"]) for v in targets]

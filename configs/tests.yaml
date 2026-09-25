@@ -5,7 +5,6 @@ defaults:
   - /datasets/preprocessor/ray_preprocessor
   - /datasets/pretrain_dataset_ray
   - /datasets/masking/mask_generator
-  - /models/BUILD_MAE # configs/models/BUILD_MAE.yaml
   - /models/meta_arch/mae/tiny  # smaller model to avoid oom for github actions
   - /optimizations/optimizations # configs/optimizations/optimizations.yaml
   - /optimizations/models/jepa/large # configs/optimizations/models/jepa.yaml
@@ -60,10 +59,12 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${wandb_project}/${experiment_name}
   # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
+  server_path_override: /groups/betzig/betziglab/CellObservatoryData
   pretrained_checkpointdir: null
+  dotenv_path: null
 
 clusters:
-  batch_size: 2 # total batch size
+  batch_size: 1 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 8 # number of cpu cores per gpu
@@ -74,12 +75,16 @@ datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [16, 128, 256, 256, 2] # NOTE: important that this matches database hypercube shape
+  train_shape: [16, 128, 256, 256, 2]
   patch_shape: [4, 16, 16, 16]
+  mask_channel_idx: null
 
   split: 0.1
   return_dataloader: true
   distributed_sampler: true
-
+  buffer_capacity: 4
+  num_actors_min: 2
+  num_actors_max: 2
   prefetch_factor: 1 # prefetch factor for the dataloader
   num_workers: 4
 
@@ -87,16 +92,23 @@ datasets:
   use_cached_hypercubes_dataframe: false
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
 
-  num_actors_min: 2
-  num_actors_max: 2
-  buffer_capacity: 4
-
   exec_async: true
   exec_pipelined: true
 
-  occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
-  cdf_threshold: 150 # to filter our hypercubes with less than this CDF threshold
-  cdf_target: 90 # to filter our hypercubes with less than this CDF target
+  # roi_list -> roi_ids: prepared_id and roi_id are different
+  # sequences, so the old values were dropped rather than translated.
+  roi_ids: null
+  cdf_threshold: null
+  cdf_target: null
+
+  databases:
+    dbname: local
+    protocol: cursor
+    verbose: true
+    sample_type: cube
+    data_channel_count: 2
+    cdf_threshold_channel_localizations: null
+    storage_location: prfs
 
 evaluation:
   val_begin: 0
@@ -104,16 +116,18 @@ evaluation:
   # used by BestMetricSaver to save best metric
   # needs to match one of metrics saved per epoch by loss_dict
   # in the training loop or evaluator.evaluate() in the evaluation loop
-  val_metric: val_step_loss
+  val_metric: step_loss
   val_mode: min # mode for the validation metric, can be 'max' or 'min'
   evaluator:
-    _target_: cell_observatory_platform.evaluation.base_evaluation.BaseEvaluator
+    name: base
     training_metrics:
-      - "step_loss": "mean"
+      - name: train_loss
+        key: step_loss
+        reduce_method: mean
 
 loggers:
   event_writers:
-    - _target_: cell_observatory_platform.training.loggers.LocalEventWriter
+    - name: local
       save_dir: ${loggers.logdir}
       step_scalars_prefix: step_logbook
       epoch_scalars_prefix: epoch_logbook
@@ -121,19 +135,19 @@ loggers:
 
 hooks:
   hooks_list:
-    - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
-    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-    - _target_: cell_observatory_platform.training.hooks.LRScheduler
-    - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
-    - _target_: cell_observatory_platform.training.hooks.IterationTimer
+    - name: anomaly_detector
+    - name: free_device_buffer
+    - name: lr_scheduler
+    - name: weight_decay_schedule
+    - name: iteration_timer
       warmup_iter: 2
-    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+    - name: periodic_writer
+    - name: periodic_checkpointer
       file_prefix: latest_model
       backend: DEEPSPEED
-    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    - name: best_checkpointer
       checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-    - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+    - name: torch_profiler
       output_dir: ${loggers.logdir}/profiler
       schedule:
         skip_first: 1
@@ -146,15 +160,15 @@ hooks:
         - CPU
       save_tensorboard: true
       shutdown_after_profile: False
-    - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+    - name: torch_memory_stats
       step_period: 5
       epoch_period: 1
       logdir: ${loggers.logdir}
-    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    - name: best_metric_saver
       metric_name: ${evaluation.val_metric}
       compare_fn: ${evaluation.val_mode}
       eval_after_validation: true
-    - _target_: cell_observatory_platform.training.hooks.EarlyStopHook
+    - name: early_stop
       patience: 10
       stopping_threshold: 0.01
       mode: ${evaluation.val_mode}

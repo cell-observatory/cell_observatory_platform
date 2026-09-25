@@ -1,4 +1,4 @@
-type: cosine
+name: cosine
 epochs: 10
 warmup: 2
 cooldown: 2

@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.backbones.maskdino_backbone.BUILD
+name: maskdino
 
 backbone_embed_dims:
   - 256

@@ -160,31 +160,37 @@ def _resize_mask(
 
 @torch.no_grad()
 def downsample(
-    na_mask: torch.Tensor, 
-    inputs: torch.Tensor, 
+    na_mask: torch.Tensor,
+    inputs: torch.Tensor,
     spatial_dims: tuple[int, ...],
-    batched_computation: bool = True,
-):  
-    if not batched_computation:    
+    per_sample_computation: bool = False,
+):
+    """Band-limit ``inputs`` by multiplying its centred spectrum with ``na_mask``.
+
+    ``per_sample_computation=True`` loops the FFT over the batch dim one sample
+    at a time (lower peak memory, slower); the default runs one batched FFT.
+    """
+    if not per_sample_computation:
+        orig_dtype = inputs.dtype
         if inputs.dtype == torch.bfloat16:
             inputs = inputs.to(dtype=torch.float32)
         # FFT, shift to centre
         k = torch.fft.fftn(inputs, dim=spatial_dims)
         k = torch.fft.fftshift(k,  dim=spatial_dims)
 
-        # clip: element-wise multiply 
+        # clip: element-wise multiply
         na_mask = na_mask.to(dtype=k.real.dtype, device=k.device)
         k.mul_(na_mask)
 
         # shift back and inverse FFT
         k = torch.fft.ifftshift(k, dim=spatial_dims)
         out = torch.fft.ifftn(k, dim=spatial_dims).real
-        
-        if inputs.dtype == torch.bfloat16:
+
+        if orig_dtype == torch.bfloat16:
             out = out.to(dtype=torch.bfloat16)
-        
+
         return out
-    
+
     out = torch.empty_like(inputs)
     B = inputs.shape[0]
     for b in range(B):
@@ -196,5 +202,5 @@ def downsample(
         k = torch.fft.ifftshift(k, dim=spatial_dims)
         yb = torch.fft.ifftn(k, dim=spatial_dims).real
         out.narrow(0, b, 1).copy_(yb.to(inputs.dtype))
-    
+
     return out

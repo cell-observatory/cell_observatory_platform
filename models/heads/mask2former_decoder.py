@@ -70,6 +70,12 @@ class SelfAttentionLayer(nn.Module):
             m = tgt_mask.to(device)
             if m.dtype != torch.bool and not torch.is_floating_point(m):
                 m = m.bool()
+            if m.dtype == torch.bool:
+                # Upstream masks use nn.MultiheadAttention semantics
+                # (True = CANNOT attend); F.scaled_dot_product_attention bool
+                # masks mean the opposite (True = attend). Convert once here at
+                # the SDPA boundary; do NOT flip the mask builders.
+                m = ~m
             # (L, L) -> (1, 1, L, L) so it broadcasts over batch & heads
             attn_mask = m.unsqueeze(0).unsqueeze(0)  # (1, 1, L, L)
         return attn_mask
@@ -336,7 +342,9 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         # positional encoding
         self.input_proj_hidden_dim = hidden_dim
-        self.pe_layer = PositionalEmbeddingSinCos(math.ceil(hidden_dim // 3), normalize=True)
+        # ceil(hidden_dim / 3): `ceil(hidden_dim // 3)` floor-divided first, so
+        # ceil saw an int and was a no-op (e.g. 256 -> 85 instead of 86).
+        self.pe_layer = PositionalEmbeddingSinCos(math.ceil(hidden_dim / 3), normalize=True)
 
         # transformer decoder
         self.num_heads = decoder_nheads

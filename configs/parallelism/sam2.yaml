@@ -1,0 +1,40 @@
+# Torch-native parallelism config for TorchNativeTrainer with the SAM2 meta
+# arch (pure data parallel: FSDP2 via fully_shard, optionally HSDP with
+# data_parallel_replicate_degree > 1). Same shape as mae.yaml; the quantize
+# block defaults to the MX backend because this profile targets B200+/B300.
+
+# ----- Core training + parallel degrees -----
+training:
+  max_norm: 1.0              # grad clipping (clip_grad_norm_ on the sharded params)
+  enable_cpu_offload: false  # FSDP2 CPUOffloadPolicy
+
+  # dtypes: FSDP2 MixedPrecisionPolicy (compute in param dtype, reduce in reduce dtype)
+  dtype: float32
+  mixed_precision_param: bfloat16
+  mixed_precision_reduce: float32
+
+  # NEED TO MAINTAIN INVARIANT: dp_replicate * dp_shard == world_size
+  data_parallel_shard_degree: -1     # FSDP shard degree (-1 -> world_size / dp_replicate)
+  data_parallel_replicate_degree: 1  # >1 -> HSDP
+
+  fsdp_reshard_after_forward: default # default | always | never
+
+# ----- Low-precision linears (hardware-gated in parallelism/quantize.py; raises on unsupported GPUs) -----
+#   float8 -> SM89+ (H100/H200): recipes tensorwise | rowwise | rowwise_with_gw_hp
+#   mx     -> SM100+ (B200/B300): recipes mxfp8_cublas | mxfp8_cublas_rceil | mxfp4_cutlass
+quantize:
+  enable: false
+  backend: mx # float8 on H100/H200, mx on B200+
+  recipe: mxfp8_cublas
+  fsdp_float8_all_gather: true # float8/tensorwise only: FP8 param all-gather + post-step scale precompute (ignored for mx)
+  filter_fqns: [] # substring excludes, on top of built-in guards (dims % 16, exact nn.Linear type)
+  include_fqns: [] # substring includes (empty = all); MX needs activation rows % 32 == 0, so SAM2 uses [image_encoder]
+
+# ----- Distributed comm settings -----
+comm:
+  init_timeout_seconds: 300
+  train_timeout_seconds: 600 # applied after the first optimizer step
+  trace_buf_size: 0 # >0 enables the NCCL flight recorder
+  save_traces_folder: null
+  save_traces_file_prefix: null
+  dump_base_folder: ${paths.outdir}/comm_traces

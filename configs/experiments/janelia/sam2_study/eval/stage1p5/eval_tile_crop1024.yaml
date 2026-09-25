@@ -1,0 +1,9 @@
+# @package _global_
+# Tile-path evaluation: sample_type tile, random 128x384x1024 YX crop per tile (the loader's tile path reads whole 2.8 GB tiles: ~20 s per sample per rank). Proxy for the full-tile metric until X-sliding windows exist (stage1p5_tile_plan.md gate c).
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_tile_crop1024_bs2
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_tile_crop1024
+paths:
+  pretrained_checkpointdir: null   # checkpoint to score on whole tiles (crop path); e.g. the tile_adapt run

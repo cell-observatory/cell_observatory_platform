@@ -1,0 +1,65 @@
+# SAM2 automatic mask generation (AMG) inference: one volume per GPU per step, viz-only by default.
+# SAM2 emits a dynamic object count N, so only the fused instance label map (fixed shape) and the
+# input volume ride the shared-memory pools; the per-object stack / boxes / IoU predictions are
+# host-side and are not routed to the save/viz workers (the generic instance config lists MaskDINO's
+# `labels`/`scores`, which SAM2 never emits).
+inferencer_worker:
+  name: inferencer_worker
+  aggregate_mode: "none"
+  inference_mode: "cube"         # DB cubes at the model's native shape; cube mode cannot save (viz only)
+  task: instance_segmentation
+  outputs_metadata:
+    tensor_info:
+      # The model INPUT after the preprocessor: the mask channel is split off, so C = the signal
+      # channel count (datasets.train_shape), not datasets.input_shape. Declared float16: the
+      # inferencer casts the bf16 model input to the declared slot dtype; bf16 has no numpy dtype.
+      data_tensor:
+        shape: ${datasets.train_shape}
+        dtype: float16
+        kind: dense
+        data_format: ${dataset_layout_order}
+    buffer_tensors:
+      - instance_masks
+      - data_tensor
+    visualize_tensors:
+      - instance_masks
+      - data_tensor
+    # Nothing is written to disk; the mapping must exist (postprocess iterates it) and stays empty
+    # so no dense output is restored to the DB-maximum tile shape.
+    save_tensors: {}
+
+  input_format: ${dataset_layout_order}
+  input_shape: ${datasets.input_shape}
+  patch_shape: ${datasets.patch_shape}
+
+  save_outputs: false
+  block_on_save: false
+  vizualize_outputs: true
+  block_on_viz: true             # wait for a viz slot instead of silently skipping samples
+  viz_sampling_policy: null      # every batch
+
+save_worker:                     # inert while save_outputs is false
+  max_workers: 2
+  save_mode: "overwrite"
+  shard_spatial_shape: [128, 128, 128]
+  chunk_spatial_shape: [32, 32, 32]
+
+viz_worker:
+  max_workers: 2
+  output_dir: ${paths.outdir}/visualizations
+  handler_configs:
+    # One PDF per cube: pages every z_step slices, rows = background | boxes (GT vs pred) |
+    # masks (GT vs pred), orthogonal views. The predicted masks are the fused label map.
+    instance_overlay:
+      pred_masks_key: instance_masks
+      gt_masks_key: label_map          # the SAM2 preprocessor publishes GT as an integer label map, not a stack
+      gt_masks_kind: instance_label_map
+      pred_boxes_format: xyzxyz
+      gt_boxes_format: cxcyczwhd
+      scale_gt_boxes: true
+      z_step: 16
+      pmin: 1.0
+      pmax: 99.0
+      background_channel: 0
+      input_format: TZYXC
+      ortho: true

@@ -59,11 +59,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import DropPath
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
@@ -133,6 +128,10 @@ class Block(nn.Module):
     """
     def __init__(self, dim, drop_path=0.):
         super().__init__()
+        # NOTE: (1, 7, 7) depthwise kernel = zero Z-mixing in every residual
+        # block (only downsampling layers see Z context). Presumed intentional
+        # for anisotropic voxels; revisit ((3,7,7) or (7,7,7) — changes every
+        # ConvNeXt checkpoint) if axial context is needed.
         self.dwconv = nn.Conv3d(dim, dim, kernel_size=(1, 7, 7), padding='same', groups=dim)  # depthwise conv
         self.norm = LayerNorm(dim, eps=1e-6)
         self.pwconv1 = nn.Linear(dim, 4 * dim) # pointwise/1x1 convs, implemented with linear layers
@@ -233,6 +232,12 @@ class ConvNeXtV2(nn.Module):
         self.return_stage_features = return_stage_features
 
     def forward_features(self, x):
+        # forward_features OWNS the channels-last -> channels-first permute so
+        # every caller (forward below, Mask2FormerBackbone.forward) can0 pass the
+        # platform-native (B, Z, Y, X, C) tensor. Previously only forward()
+        # permuted, so the wrapper's direct forward_features call would have fed
+        # channels-last data to the convs.
+        x = torch.permute(x, (0, -1, 1, 2, 3))  # (B, Z, Y, X, C) -> (B, C, Z, Y, X)
         if self.return_stage_features:
             stage_features = []
             for i in range(4):
@@ -249,12 +254,17 @@ class ConvNeXtV2(nn.Module):
     def forward(self, data_sample: dict):
         x, meta = data_sample['data_tensor'], data_sample['metainfo']
 
-        x = torch.permute(x, (0, -1, 1, 2, 3))  # (B, Z, Y, X, C) -> (B, C, Z, Y, X)
+        # channels-last -> channels-first permute happens inside forward_features
         x = self.forward_features(x)
         x = self.regressor(x)
         return x
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import build_kwargs as _build_kwargs
+
+
+@REGISTRY.register("backbone", "convnext")
 def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
     if adapter_args is not None:
         raise NotImplementedError("Adapter is not supported for ConvNeXtV2.")
@@ -267,4 +277,4 @@ def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> n
             if isinstance(resolved, dict):
                 backbone_wrapper_args = resolved
         logger.info(f"Building ConvNeXtV2 with args: {backbone_wrapper_args}")
-        return ConvNeXtV2(**backbone_wrapper_args)
+        return ConvNeXtV2(**_build_kwargs(backbone_wrapper_args))

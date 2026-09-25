@@ -1,0 +1,29 @@
+# SAM2 + ViT-L (masked_encoder) image encoder. Module FQNs are resolved with
+# attrgetter on the built SAM2 model: SAM2.image_encoder (SAMBackbone)
+# .backbone (MaskedEncoder).encoder (Encoder).transformer_blocks.
+# The mae/* presets name `masked_encoder.encoder`, which does not exist on SAM2.
+activation_checkpoint:
+  enable: false
+  modules:
+    - ["image_encoder.backbone.encoder", "transformer_blocks"]
+  selective_ac_option: 2
+  per_op_sac_force_recompute_mm_shapes_by_fqns: null
+  mode: "selective"
+  mm_recompute_frac: 2
+
+torch_compile:
+  enable: false
+  modules:
+    - ["image_encoder.backbone.encoder", "transformer_blocks"]
+  range: block_based
+  mode: null
+  dynamic: false
+  blockbased_fullgraph: false
+  enable_compiled_autograd: false
+  backend: inductor
+
+# per-block fully_shard groups for TorchNativeTrainer (FSDP2); the root wrap
+# claims everything else (prompt encoder, memory attention, mask decoder).
+fsdp:
+  modules:
+    - ["image_encoder.backbone.encoder", "transformer_blocks"]

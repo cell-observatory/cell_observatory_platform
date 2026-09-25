@@ -208,7 +208,7 @@ class SimpleFeaturePyramid(nn.Module):
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(SimpleFeaturePyramid.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -217,5 +217,9 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
         kwargs[k] = v
     return kwargs
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("adapter", "vit_det")
 def BUILD(adapter_args: dict):
     return SimpleFeaturePyramid(**_extract_model_kwargs(cfg=adapter_args))

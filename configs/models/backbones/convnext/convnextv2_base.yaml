@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.backbones.convnext.BUILD
+name: convnext
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.train_shape}
 modes: 15 # output dim of the MLP head

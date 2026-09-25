@@ -1,0 +1,18 @@
+# @package _global_
+# Feature: ZeRO-3 parameter partitioning instead of ZeRO-2. Inline delta of
+# /deepspeed/zero3 vs zero2 (a nested group cannot be swapped with `override`
+# from a variant).
+defaults:
+  - base_sam2_deepspeed
+  - _self_
+
+experiment_name: sam2_abc_deepspeed_single_cube_128_zero3
+
+deepspeed:
+  zero_optimization:
+    stage: 3
+    stage3_prefetch_bucket_size: auto
+    stage3_param_persistence_threshold: auto
+    stage3_max_live_parameters: 1e9
+    stage3_max_reuse_distance: 1e9
+    stage3_gather_16bit_weights_on_model_save: false

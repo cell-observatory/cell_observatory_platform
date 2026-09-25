@@ -1,0 +1,13 @@
+# @package _global_
+# Feature: selective activation checkpointing on the ViT-L encoder blocks (torch-native).
+defaults:
+  - base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_single_cube_128_ac
+
+optimizations:
+  models:
+    sam:
+      activation_checkpoint:
+        enable: true

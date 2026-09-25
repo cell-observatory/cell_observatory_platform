@@ -1,8 +1,11 @@
 import os
 import sys
+import getpass
+import shutil
 from pathlib import Path
 from multiprocessing import shared_memory
 
+SCRATCH_DIR = Path("/scratch")
 SHM_DIR = Path("/dev/shm")
 PREFIXES = ("psm_",)
 PATH_ONLY_PREFIXES = ("nccl-",)
@@ -84,7 +87,22 @@ def clean_all_user_shm() -> int:
             pass
     return removed
 
+def clean_scratch_directory() -> int:
+    removed = 0
+    euid = os.geteuid()
+    for item in SCRATCH_DIR.iterdir():
+        try:
+            if item.stat().st_uid == euid:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+                removed += 1
+        except Exception:
+            pass
+    return removed
 
 if __name__ == "__main__":
-    n = unlink_shared_memory()
+    unlink_shared_memory()
+    clean_scratch_directory()
     sys.exit(0)

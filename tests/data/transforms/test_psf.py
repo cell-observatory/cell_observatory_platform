@@ -1,13 +1,24 @@
-import tempfile
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
-from scipy.fft import next_fast_len
 from skimage.io import imsave
 
 from cell_observatory_platform.data.transforms.psf import ConvolveWithPSF
+
+
+def _sample(data: torch.Tensor, has_time: bool = False) -> dict:
+    """Wrap a tensor in the dict contract ConvolveWithPSF.__call__ now requires.
+
+    Layout is no longer a constructor arg -- __call__ reads
+    metainfo["data_types"]["data_tensor"]["has_time"] to dispatch 3D vs 4D
+    (psf.py:300-307). Mirrors what RayPreprocessor.forward injects.
+    """
+    return {
+        "data_tensor": data,
+        "metainfo": {"data_types": {"data_tensor": {"has_time": has_time}}},
+    }
+
+
 
 
 def create_gaussian_psf(shape: tuple[int, ...], sigma: float = 1.0) -> torch.Tensor:
@@ -34,7 +45,6 @@ class TestConvolveWithPSFInitialization:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
@@ -44,43 +54,17 @@ class TestConvolveWithPSFInitialization:
 
         assert transform.otf is not None
 
-    def test_init_with_file_path(self):
-        """Test initialization with a file path to a PSF image."""
-        psf_array = create_gaussian_psf((5, 5, 5)).numpy().astype(np.float32)
-        input_shape = (8, 16, 16, 1)  # ZYXC
-
-        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
-            imsave(f.name, psf_array)
-            psf_path = Path(f.name)
-
-            transform = ConvolveWithPSF(
-                psf=psf_path,
-                pad_type="reflect",
-                input_format="ZYXC",
-                input_shape=input_shape,
-                input_pixel_size_um=(1.0, 1.0, 1.0),
-                psf_pixel_size_um=(1.0, 1.0, 1.0),
-                psf_format="ZYX",
-                psf_centered=True,
-            )
-
-            assert transform.otf is not None
-            psf_path.unlink()  # Clean up
-
-    def test_init_unsupported_input_format_raises(self):
-        """Test that unsupported input format raises ValueError."""
+    def test_init_with_file_path(self, tmp_path):
+        """A PSF given as an image path is loaded and prepared identically to the
+        same PSF given as a tensor."""
         psf = create_gaussian_psf((5, 5, 5))
-
-        with pytest.raises(ValueError, match="Unsupported input_format"):
-            ConvolveWithPSF(
-                psf=psf,
-                pad_type="reflect",
-                input_format="YXC",  # Missing Z
-                input_shape=(16, 16, 1),
-                input_pixel_size_um=(1.0, 1.0, 1.0),
-                psf_pixel_size_um=(1.0, 1.0, 1.0),
-                psf_format="ZYX",
-            )
+        psf_path = tmp_path / "psf.tif"
+        imsave(psf_path, psf.numpy().astype(np.float32), check_contrast=False)
+        kw = dict(pad_type="reflect", input_shape=(8, 16, 16, 1), input_pixel_size_um=(1.0, 1.0, 1.0),
+                  psf_pixel_size_um=(1.0, 1.0, 1.0), psf_format="ZYX", psf_centered=True)
+        from_file = ConvolveWithPSF(psf=psf_path, **kw)
+        from_tensor = ConvolveWithPSF(psf=psf, **kw)
+        torch.testing.assert_close(from_file.otf, from_tensor.otf)
 
     def test_init_unsupported_psf_format_raises(self):
         """Test that unsupported PSF format raises ValueError."""
@@ -90,7 +74,6 @@ class TestConvolveWithPSFInitialization:
             ConvolveWithPSF(
                 psf=psf,
                 pad_type="reflect",
-                input_format="ZYXC",
                 input_shape=(8, 16, 16, 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -103,7 +86,6 @@ class TestConvolveWithPSFInitialization:
             ConvolveWithPSF(
                 psf=[1, 2, 3],  # type: ignore[arg-type]  # Invalid type intentional
                 pad_type="reflect",
-                input_format="ZYXC",
                 input_shape=(8, 16, 16, 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -118,7 +100,6 @@ class TestConvolveWithPSFInitialization:
             ConvolveWithPSF(
                 psf=psf_2d,
                 pad_type="reflect",
-                input_format="ZYXC",
                 input_shape=(8, 16, 16, 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -131,7 +112,6 @@ class TestConvolveWithPSFInitialization:
             ConvolveWithPSF(
                 psf=psf_4d,
                 pad_type="reflect",
-                input_format="ZYXC",
                 input_shape=(8, 16, 16, 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -151,33 +131,15 @@ class TestConvolveWithPSFConvolution:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        output = transform(data)
+        output = transform(_sample(data))["data_tensor"]
         assert isinstance(output, torch.Tensor)
         assert output.shape == data.shape, "Output shape should match input shape"
-
-    def test_convolve_tensor_preserves_shape_non_zyxc(self):
-        """Non-ZYXC layouts are currently unsupported."""
-        psf = create_gaussian_psf((5, 5, 5))
-        input_shape = (1, 8, 16, 16)  # CZYX without batch
-        data = torch.rand(2, *input_shape)  # Add batch dimension
-
-        with pytest.raises(ValueError, match="Unsupported input_format"):
-            ConvolveWithPSF(
-                psf=psf,
-                pad_type="reflect",
-                input_format="CZYX",
-                input_shape=input_shape,
-                input_pixel_size_um=(1.0, 1.0, 1.0),
-                psf_pixel_size_um=(1.0, 1.0, 1.0),
-                psf_format="ZYX",
-            )
 
     def test_convolve_tensor_preserves_dtype(self):
         """Test that convolution preserves the original dtype."""
@@ -188,14 +150,13 @@ class TestConvolveWithPSFConvolution:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        output = transform(data)
+        output = transform(_sample(data))["data_tensor"]
         assert isinstance(output, torch.Tensor)
         assert output.dtype == data.dtype, "Output dtype should match input dtype"
 
@@ -218,7 +179,6 @@ class TestConvolveWithPSFConvolution:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -226,7 +186,7 @@ class TestConvolveWithPSFConvolution:
             psf_centered=True,
         )
 
-        output = transform(data)
+        output = transform(_sample(data))["data_tensor"]
 
         # The local window around the impulse should approximate the PSF (normalized).
         half = psf.shape[0] // 2
@@ -252,14 +212,13 @@ class TestConvolveWithPSFConvolution:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        output = transform(data)
+        output = transform(_sample(data))["data_tensor"]
 
         # With reflect padding, a uniform input stays uniform everywhere.
         interior = output[0, :, :, :, 0]
@@ -280,7 +239,6 @@ class TestConvolveWithPSFConvolution:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -288,7 +246,7 @@ class TestConvolveWithPSFConvolution:
             psf_centered=True,
         )
 
-        output = transform(data)[0, :, :, :, 0]
+        output = transform(_sample(data))["data_tensor"][0, :, :, :, 0]
 
         # The far corner should be ~0 (no wraparound from the impulse at [0,0,0]).
         assert output[-1, -1, -1].abs().item() < 1e-6
@@ -301,7 +259,6 @@ class TestConvolveWithPSFConvolution:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -311,7 +268,7 @@ class TestConvolveWithPSFConvolution:
         # 4D tensor without batch dimension
         data_4d = torch.rand(*input_shape)
         with pytest.raises(ValueError, match="Expected 5D input tensor"):
-            transform(data_4d)
+            transform(_sample(data_4d))
 
     def test_convolve_clamps_negative_values(self):
         """Verify output has no negative values after convolution."""
@@ -326,14 +283,13 @@ class TestConvolveWithPSFConvolution:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="zero",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        output = transform(data)
+        output = transform(_sample(data))["data_tensor"]
         assert isinstance(output, torch.Tensor)
         assert (output >= 0).all(), "Output should have no negative values after clamping"
 
@@ -346,14 +302,13 @@ class TestConvolveWithPSFConvolution:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        output = transform(data)
+        output = transform(_sample(data))["data_tensor"]
         assert isinstance(output, torch.Tensor)
         assert output.shape == data.shape, "Multi-channel output shape should match input shape"
 
@@ -370,7 +325,6 @@ class TestConvolveWithPSFConvolution:
         transform_multi = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -380,14 +334,13 @@ class TestConvolveWithPSFConvolution:
         transform_single = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape_single,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        output_multi = transform_multi(data)
+        output_multi = transform_multi(_sample(data))["data_tensor"]
 
         # Channel 1 should remain zero (no cross-channel leakage)
         assert torch.allclose(
@@ -398,7 +351,7 @@ class TestConvolveWithPSFConvolution:
 
         # Channel 0 should match single-channel convolution
         data_single = data[..., 0:1]  # Extract channel 0
-        output_single = transform_single(data_single)
+        output_single = transform_single(_sample(data_single))["data_tensor"]
         assert torch.allclose(
             output_multi[0, :, :, :, 0],
             output_single[0, :, :, :, 0],
@@ -418,14 +371,13 @@ class TestConvolveWithPSFDictInput:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        batch: dict = {"data_tensor": data.clone(), "other_key": "preserved"}
+        batch: dict = {**_sample(data.clone()), "other_key": "preserved"}
         output = transform(batch)
         assert isinstance(output, dict)
         assert "data_tensor" in output
@@ -439,7 +391,6 @@ class TestConvolveWithPSFDictInput:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=(8, 16, 16, 1),
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -447,7 +398,7 @@ class TestConvolveWithPSFDictInput:
         )
 
         with pytest.raises(KeyError, match="data_tensor"):
-            transform({"wrong_key": torch.rand(1, 8, 16, 16, 1)})
+            transform({"wrong_key": torch.rand(1, 8, 16, 16, 1), "metainfo": {}})
 
     def test_convolve_invalid_type_raises(self):
         """Test that invalid input type raises TypeError."""
@@ -456,65 +407,44 @@ class TestConvolveWithPSFDictInput:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=(8, 16, 16, 1),
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        with pytest.raises(TypeError, match="expects torch.Tensor or dict"):
+        with pytest.raises(TypeError, match="expects a dict sample"):
             transform("invalid_input")  # type: ignore[arg-type]
+
+    def test_time_axis_is_convolved_per_frame(self):
+        """has_time=True folds T into the batch: every frame is convolved exactly
+        as the corresponding single-frame ZYXC call would."""
+        psf = create_gaussian_psf((5, 5, 5), sigma=1.0)
+        kw = dict(pad_type="reflect", input_shape=(8, 8, 8, 1), input_pixel_size_um=(1.0, 1.0, 1.0),
+                  psf_format="ZYX", psf_pixel_size_um=(1.0, 1.0, 1.0))
+        x = torch.rand(2, 3, 8, 8, 8, 1)                     # (B, T, Z, Y, X, C)
+        out = ConvolveWithPSF(psf=psf, **kw)(_sample(x.clone(), has_time=True))["data_tensor"]
+        assert out.shape == x.shape
+        for f in range(3):
+            ref = ConvolveWithPSF(psf=psf, **kw)(_sample(x[:, f].clone()))["data_tensor"]
+            torch.testing.assert_close(out[:, f], ref)
 
 
 class TestConvolveWithPSFCentering:
     """Tests for PSF centering behavior."""
 
-    def test_centered_otf_matches_explicit_ifftshift_rfftn(self):
-        """Test that centered PSF uses ifftshift before rfftn when building OTF (even-sized PSF)."""
-        psf = create_gaussian_psf((8, 8, 8), sigma=1.5)
-        input_shape = (8, 8, 8, 1)
-        input_spatial_shape = input_shape[:3]
-
-        transform = ConvolveWithPSF(
-            psf=psf,
-            pad_type="reflect",
-            input_format="ZYXC",
-            input_shape=input_shape,
-            input_pixel_size_um=(1.0, 1.0, 1.0),
-            psf_pixel_size_um=(1.0, 1.0, 1.0),
-            psf_format="ZYX",
-            psf_centered=True,
-        )
-
-        # Match the implementation: use next_fast_len for optimal FFT sizes
-        spatial_shape_padded = tuple(
-            input_spatial_shape[i] + psf.shape[i] - 1 for i in range(3)
-        )
-        common_real_space_shape = tuple(int(next_fast_len(s)) for s in spatial_shape_padded)
-
-        # Compute kernel padding to reach common_real_space_shape
-        # NOTE: Match the implementation - pad_before rounds up for correct ifftshift centering
-        kernel_padding = []
-        for fft_size, kernel_size in zip(common_real_space_shape, psf.shape):
-            diff = fft_size - kernel_size
-            pad_before = (diff + 1) // 2  # rounds up
-            pad_after = diff // 2  # rounds down
-            kernel_padding.append((pad_before, pad_after))
-        kernel_padding_flat = tuple(
-            val for pair in reversed(kernel_padding) for val in pair
-        )
-        psf_padded = torch.nn.functional.pad(
-            psf, pad=kernel_padding_flat, mode="constant", value=0
-        )
-        expected = torch.fft.rfftn(
-            torch.fft.ifftshift(psf_padded, dim=(0, 1, 2)),
-            s=common_real_space_shape,
-            dim=(0, 1, 2),
-        )
-        got = transform.otf.squeeze()
-        assert expected.shape == got.shape
-        assert torch.allclose(got, expected, atol=1e-6), "OTF should match explicit ifftshift+rfftn"
+    def test_off_centre_delta_shifts_image_by_its_offset(self):
+        """The PSF's centre voxel is the convolution origin: an impulse one voxel
+        to +x of the centre shifts the image by one voxel along x (y[n] = x[n-1]),
+        and with zero padding the first column is fed by the zero pad."""
+        psf = torch.zeros(5, 5, 5)
+        psf[2, 2, 3] = 1.0                                   # impulse one voxel right (+x) of the centre
+        t = ConvolveWithPSF(psf=psf, pad_type="zero", input_shape=(6, 6, 8, 1),
+                            input_pixel_size_um=(1.0, 1.0, 1.0), psf_format="ZYX", psf_pixel_size_um=(1.0, 1.0, 1.0))
+        x = torch.rand(1, 6, 6, 8, 1)
+        out = t(_sample(x.clone()))["data_tensor"]
+        torch.testing.assert_close(out[..., 1:, :], x[..., :-1, :], atol=1e-5, rtol=1e-5)   # y[n] = x[n-1]
+        torch.testing.assert_close(out[..., 0, :], torch.zeros_like(out[..., 0, :]), atol=1e-5, rtol=0)  # zero pad feeds x[-1]
 
     def test_psf_uncentered_raises(self):
         """psf_centered=False is currently unsupported."""
@@ -525,7 +455,6 @@ class TestConvolveWithPSFCentering:
             ConvolveWithPSF(
                 psf=psf,
                 pad_type="reflect",
-                input_format="ZYXC",
                 input_shape=input_shape,
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_pixel_size_um=(1.0, 1.0, 1.0),
@@ -541,7 +470,6 @@ class TestConvolveWithPSFPixelSize:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
@@ -558,7 +486,6 @@ class TestConvolveWithPSFPixelSize:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
@@ -575,7 +502,6 @@ class TestConvolveWithPSFPixelSize:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="reflect",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
@@ -598,14 +524,13 @@ class TestConvolveWithPSFPadding:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="zero",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        output = transform(data)
+        output = transform(_sample(data))["data_tensor"]
         assert isinstance(output, torch.Tensor)
         assert output.shape == data.shape, "Output shape should match input shape"
 
@@ -619,14 +544,13 @@ class TestConvolveWithPSFPadding:
         transform = ConvolveWithPSF(
             psf=psf,
             pad_type="zero",
-            input_format="ZYXC",
             input_shape=input_shape,
             input_pixel_size_um=(1.0, 1.0, 1.0),
             psf_pixel_size_um=(1.0, 1.0, 1.0),
             psf_format="ZYX",
         )
 
-        output = transform(data)
+        output = transform(_sample(data))["data_tensor"]
 
         # With zero padding, edges should have lower values than interior
         # because the PSF sees zeros outside the boundary.
@@ -642,10 +566,71 @@ class TestConvolveWithPSFPadding:
             ConvolveWithPSF(
                 psf=psf,
                 pad_type="invalid_padding",
-                input_format="ZYXC",
                 input_shape=(8, 16, 16, 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_format="ZYX",
             )
 
+
+    def test_crop_back_keeps_axis_when_pad_after_is_zero(self):
+        """An axis whose FFT size needs no trailing pad (8 + 1 - 1 = 8 is already a
+        fast length) must still crop back to its full extent: the output keeps
+        the input shape instead of collapsing that axis."""
+        psf = torch.zeros(1, 8, 8)
+        psf[0, 4, 4] = 1.0  # delta kernel (centered)
+        t = ConvolveWithPSF(
+            psf=psf, pad_type="reflect", input_shape=(8, 8, 8, 1),
+            input_pixel_size_um=(0.1, 0.1, 0.1), psf_format="ZYX",
+            psf_pixel_size_um=(0.1, 0.1, 0.1),
+        )
+        x = torch.rand(1, 8, 8, 8, 1, dtype=torch.float32)
+        out = t(_sample(x.clone()))
+        assert out["data_tensor"].shape == x.shape
+
+
+def _small_psf():
+    z = torch.arange(5, dtype=torch.float32) - 2
+    g = torch.exp(-0.5 * (z / 1.2) ** 2)
+    psf = g[:, None, None] * g[None, :, None] * g[None, None, :]
+    return psf / psf.sum()
+
+
+class TestConvolveWithPSFLazyOTF:
+    """The OTF/padding are prepared per incoming spatial shape (the collator can
+    deliver the larger buffer shape rather than datasets.input_shape)."""
+
+    def test_rebuilds_otf_for_larger_incoming_shape(self):
+        """Data arriving at a larger shape than prepared is convolved (no raise)
+        and matches a transform prepared for that shape directly."""
+        psf = _small_psf()
+        # prepared for (8, 8, 8); data arrives at the LARGER buffer shape
+        t_small = ConvolveWithPSF(
+            psf=psf.clone(), pad_type="reflect", input_shape=(8, 8, 8, 1),
+            input_pixel_size_um=(0.1, 0.1, 0.1), psf_format="ZYX",
+            psf_pixel_size_um=(0.1, 0.1, 0.1),
+        )
+        data = torch.rand(1, 12, 10, 8, 1)
+        out = t_small._convolve_with_psf(data.clone())
+        assert out.shape == data.shape                       # rebuilt, no raise
+
+        # reference transform prepared for the buffer shape directly
+        t_ref = ConvolveWithPSF(
+            psf=psf.clone(), pad_type="reflect", input_shape=(12, 10, 8, 1),
+            input_pixel_size_um=(0.1, 0.1, 0.1), psf_format="ZYX",
+            psf_pixel_size_um=(0.1, 0.1, 0.1),
+        )
+        ref = t_ref._convolve_with_psf(data.clone())
+        torch.testing.assert_close(out, ref)
+
+    def test_fixed_shape_prepares_once(self):
+        """Data at the prepared shape reuses the cached OTF."""
+        psf = _small_psf()
+        t = ConvolveWithPSF(
+            psf=psf, pad_type="reflect", input_shape=(8, 8, 8, 1),
+            input_pixel_size_um=(0.1, 0.1, 0.1), psf_format="ZYX",
+            psf_pixel_size_um=(0.1, 0.1, 0.1),
+        )
+        prepared = t._prepared_spatial
+        t._convolve_with_psf(torch.rand(2, 8, 8, 8, 1))
+        assert t._prepared_spatial == prepared == (8, 8, 8)

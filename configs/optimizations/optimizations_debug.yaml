@@ -1,0 +1,15 @@
+defaults:
+  - optimizations
+  - _self_
+
+# Opt-in debug preset: everything from optimizations.yaml plus verbose
+# distributed/NCCL diagnostics. Do NOT use in production runs:
+# TORCH_NCCL_BLOCKING_WAIT spins the CPU on every collective and
+# TORCH_DISTRIBUTED_DEBUG adds per-collective logging overhead.
+env:
+  TORCH_DISTRIBUTED_DEBUG: "INFO"
+  TORCH_NCCL_BLOCKING_WAIT: 1
+  # Per-collective NCCL tracing (moved here from the cluster configs, which
+  # shipped TRACE to every production run):
+  NCCL_DEBUG: "TRACE"
+  NCCL_DEBUG_SUBSYS: "GRAPH"

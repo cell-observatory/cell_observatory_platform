@@ -1,0 +1,60 @@
+# @package _global_
+# Evaluation overlay: merge AFTER a run's training config to score its checkpoint with unprompted SAM2 automatic mask
+# generation + the instance evaluator on that run's own held-out validation cubes (datasets.eval_split: val reproduces
+# the split from the same query, seed and split fraction). A leaf is three lines:
+#   defaults: [/experiments/<the run's training config>, /experiments/janelia/sam2_study/eval/test_overlay, _self_]
+#   experiment_name: eval_<run>_<epoch>
+#   paths: {pretrained_checkpointdir: <dir holding step-N/ of the checkpoint to score>}
+# Runs on this node in local mode: 8 GPUs, one cube per GPU per step (AMG encodes one volume at a time),
+# trainer_loop.max_steps cubes per GPU. Output: <outdir>/logs/scalars/epoch_logbook.csv (epoch_loss/test/<metric>_median);
+# table: python scripts/utils/eval_table.py $DATA_DIR/sam2_study/eval
+defaults:
+  - /evaluation/sam2_instance_evaluator   # merged on top of the training base's loss evaluator (no `override` from a leaf)
+  - _self_
+
+job_type: test
+trainer: cell_observatory_platform.training.loops.TestTrainer
+
+clusters:
+  launcher_type: local
+  chain_jobs: 1
+  worker_nodes: 1
+  gpus_per_worker: 8
+  batch_size: 8               # 1 per GPU: SAM2.evaluate_step encodes one volume per call
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/eval/${experiment_name}
+  resume_checkpointdir: null  # eval loads model weights only, via pretrained_checkpointdir (set in the leaf)
+
+datasets:
+  split: 0.02                 # as the Stage-1 runs: reproduces their validation rows (keep equal to the run under test)
+  eval_split: val
+  max_rows: null
+  timepoint_list: null
+  buffer_capacity: 4          # one cube per slot; 4 in flight per rank is plenty at ~5 s per AMG step
+  preprocessor:
+    mask_rows: batch          # no per-step all-reduce (the SAM2 target view is unused by AMG)
+
+trainer_loop:
+  iteration_mode: epoch
+  max_steps: 16               # cubes per GPU -> 128 held-out cubes per checkpoint (32+ for a decision at Δ ≈ 0.01)
+  checkpoint_every_n_epochs: null
+  with_perf_metrics: false
+
+evaluation:
+  evaluator:
+    compute_device: cuda      # the per-prediction IoU bincounts run on the GPU (CPU: tens of seconds per cube)
+
+loggers:
+  event_writers:
+    - name: local
+      save_dir: ${loggers.logdir}
+      step_scalars_prefix: step_logbook
+      epoch_scalars_prefix: epoch_logbook
+      scalars_save_format: csv
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer  # returns the collator's device slot after every step
+  - name: iteration_timer
+  - name: periodic_writer     # the only flush of the test metrics

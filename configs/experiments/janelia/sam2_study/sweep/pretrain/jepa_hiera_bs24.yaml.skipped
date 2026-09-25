@@ -1,0 +1,30 @@
+# @package _global_
+# JEPA with the hierarchical (Hiera-L multiscale) backbone, as the legacy test_pretrain_jepa_histone_membrane_localdb: patch 8^3,
+# hiera_mu block masking with rank-4 generator units ([1,8,8,8], q_stride [1,2,2,2]); the model keeps [8,8,8]/[2,2,2]. bs 24/GPU guess.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/pretrain/jepa_vit_base
+  - /models/meta_arch/jepa/large_hiera
+  - /optimizations/models/jepa/large_hiera
+  - _self_
+experiment_name: jepa_hiera_bs24
+clusters: {batch_size: 192}
+datasets:
+  patch_shape: [8, 8, 8, null]
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+        lateral_mask_scale: [0.7, 0.9]
+        axial_mask_scale: [0.7, 0.9]
+        aspect_ratio_scale_hw: [0.75, 1.5]
+        num_blocks: 2
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "hiera_mu"
+        mask_unit_size: [1, 8, 8, 8]
+        q_stride: [1, 2, 2, 2]
+        q_pool: 2
+        skip_patch_mask_generation: true

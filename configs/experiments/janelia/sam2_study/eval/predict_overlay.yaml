@@ -1,0 +1,55 @@
+# @package _global_
+# Inference overlay (plots only): merge AFTER a run's training config to run SAM2 automatic mask generation on the
+# run's held-out validation cubes and write one PDF per cube under <outdir>/visualizations (background | GT vs
+# predicted boxes | GT vs predicted masks, orthogonal views every 16 slices). Nothing is written as volumes.
+# Leaf pattern as test_overlay.yaml, with this overlay and experiment_name infer_<run>_<epoch>.
+defaults:
+  - /inference/inference_instance_segmentation_sam2
+  - _self_
+
+job_type: predict
+trainer: cell_observatory_platform.training.loops.Inferencer
+
+clusters:
+  launcher_type: local
+  chain_jobs: 1
+  worker_nodes: 1
+  gpus_per_worker: 8
+  batch_size: 8               # 1 per GPU: SAM2.inference_step encodes one volume per call
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/inference/${experiment_name}
+  resume_checkpointdir: null
+
+datasets:
+  split: 0.02
+  eval_split: val
+  max_rows: null
+  timepoint_list: null
+  buffer_capacity: 4          # loader host slots AND viz shared-memory slots per rank (240 MiB image + 48 MiB label map each)
+  buffers:
+    rank_memory_budget_gb: 64 # the default interpolates clusters.mem_per_worker, which is in MB, and disables the check
+  preprocessor:
+    mask_rows: batch
+
+trainer_loop:
+  iteration_mode: epoch
+  max_steps: 4                # cubes per GPU -> 32 PDFs per checkpoint (~10 s per cube incl. the PDF)
+  checkpoint_every_n_epochs: null
+  with_perf_metrics: false
+
+loggers:
+  event_writers:
+    - name: local
+      save_dir: ${loggers.logdir}
+      step_scalars_prefix: step_logbook
+      epoch_scalars_prefix: epoch_logbook
+      scalars_save_format: csv
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: iteration_timer
+  - name: inference_metrics   # viz_worker/visualize_successful in step_logbook.csv: viz failures are logged, not fatal
+    log_every_n_steps: 1
+  - name: periodic_writer

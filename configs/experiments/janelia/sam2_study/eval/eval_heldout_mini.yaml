@@ -1,0 +1,17 @@
+# @package _global_
+# Smoke of eval_heldout_lr2e-4_ep7: same checkpoint, tiles and pipeline, 64 rows (8 cubes per GPU, ~1 min after the
+# ~6 min start-up), 15-minute LSF link. Passes when epoch_logbook.csv holds finite epoch_loss/test/mask_map_median.
+defaults:
+  - /experiments/janelia/sam2_study/eval/eval_heldout_lr2e-4_ep7
+  - _self_
+
+experiment_name: eval_heldout_mini
+
+clusters:
+  timelimit: "00:15"
+
+datasets:
+  max_rows: 64
+
+trainer_loop:
+  max_steps: 8

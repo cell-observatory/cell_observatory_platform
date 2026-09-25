@@ -15,25 +15,25 @@ from timm.layers import Mlp, SwiGLU
 
 from cell_observatory_platform.models.layers.utils import cat_keep_shapes, uncat_with_shapes
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def get_mlp(ff: Union[Module, Literal["Mlp", "SwiGLU", "Mlp_ListFwdMixin", "SwiGLUFFN_ListFwdMixin"]] = "Mlp"):
-    if ff == "Mlp" or type(ff) == type(Mlp):
-        return Mlp
-
-    elif ff == "SwiGLU" or type(ff) == type(SwiGLU):
-        return SwiGLU
-
-    elif ff == "Mlp_ListFwdMixin":
-        return Mlp_ListFwdMixin
-
-    elif ff == "SwiGLUFFN_ListFwdMixin":
-        return SwiGLUFFN_ListFwdMixin
-
-    else:
+    if isinstance(ff, str):
+        if ff == "Mlp":
+            return Mlp
+        elif ff == "SwiGLU":
+            return SwiGLU
+        elif ff == "Mlp_ListFwdMixin":
+            return Mlp_ListFwdMixin
+        elif ff == "SwiGLUFFN_ListFwdMixin":
+            return SwiGLUFFN_ListFwdMixin
         raise ValueError(f"Unknown MLP layer: {ff}")
+    # Already-resolved class (Encoder re-resolves what the meta-arch resolved):
+    # pass through unchanged. 
+    if isinstance(ff, type):
+        return ff
+    raise TypeError(f"get_mlp expects a name or a class, got {type(ff)!r}")
 
 
 class MLP(nn.Module):

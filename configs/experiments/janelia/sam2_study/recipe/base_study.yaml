@@ -1,0 +1,53 @@
+# @package _global_
+# Study base = 2026-09-01 b300 bring-up base (torch-native FSDP2) + study-wide overrides.
+# Fixed for the whole study: point-sampling loss, SAM2 loss weights, bf16 (except FP8 probes).
+defaults:
+  - /experiments/janelia/tests/2026_09_01/sam2/base_sam2_torch
+  - _self_
+
+experiment_name: sam2_study_base
+wandb_project: sam2_study
+
+paths:
+  # The bring-up base selects /paths/local (ABC sif path). Hydra cannot re-select a nested group from
+  # here, so the three Janelia values from /paths/janelia are set explicitly.
+  apptainer_image: /groups/betzig/betziglab/hph/containers/cell_observatory_platform_feature-local_db_caches_torch_26_01.sif
+  data_path: /groups/betzig/betziglab/hph/cell_observatory_project
+  server_folder_path: /groups/betzig/betziglab/CellObservatoryData
+  outdir: ${paths.data_path}/sam2_study/${experiment_name}
+  # cod_db_20260824 storage root for `synthetic` is /clusterfs/vast/forsynthetic/.../synthetic_data_iteration_2 (ABC);
+  # same tree is mirrored under CellObservatoryData on Janelia.
+  server_path_override: /groups/betzig/betziglab/CellObservatoryData/forsynthetic/benchmark_tests/data/iteration_2/synthetic_data_iteration_2
+
+parallelism:
+  quantize:
+    enable: false             # bf16 everywhere except the FP8 probes
+
+models:
+  meta_arch:
+    sam:
+      debug: false            # silences AMG print()s at eval
+      criterion_args:
+        use_point_sampling: true
+        num_points: 26000
+        low_res_multimasks: true
+
+datasets:
+  split: 0.0                  # Steps 1+ set 0.1
+  max_rows: null
+  timepoint_list: null
+  preprocessor:
+    max_masks: 46             # cap (batch-local padding); cubes hold <= 46 instances
+  databases:
+    max_tile_shape: null      # tile probes set [128, 512, 3328]
+
+schedulers: {epochs: 1, warmup: 0, cooldown: 0}
+optimizers:
+  lr: 1e-4
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+
+optimizations:
+  # 2026-09-02 step-time debug: the mask decoder's batch dim is the batch-local instance count, so
+  # cudnn.benchmark re-ran its exhaustive 3D-conv search on every new size (0.5-1.3 s stalls, max over
+  # ranks) -> 14 s steps. Heuristic algos are as fast here (1-GPU step 1.0 s either way).
+  cudnn_benchmark: false

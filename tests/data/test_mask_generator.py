@@ -407,144 +407,90 @@ def test_blocked_mask_properties(
         assert torch.all(box == 1), "masked block is not a block"
 
 
-@pytest.mark.parametrize(
-    "lateral_scale, axial_scale",
-    [
-        ((0.2, 0.3), (0.2, 0.3)),
-        ((0.4, 0.5), (0.4, 0.5)),
-        ((0.6, 0.7), (0.6, 0.7)),
-        ((0.8, 0.9), (0.8, 0.9)),
-    ],
-)
-def test_blocked_mask_3d_debug_prints(make_mask_generator, lateral_scale, axial_scale):
-    """
-    Debug-only printout:
-      - 3D ZYXC layout with image size (Z=128, Y=384, X=384, C=2)
-      - BLOCKED mode, num_blocks=2
-      - Iterate a few times per (lateral_scale, axial_scale) pair
-      - Print masked vs unmasked voxel counts
-
-    Example Output:
-
-    [blocked-3d] layout=ZYXC shape(Z,Y,X,C)=(128, 384, 384, 2) patch(T,Z,Y,X)=(1, 16, 16, 16) num_blocks=2 lateral_scale=(0.2, 0.3) axial_scale=(0.2, 0.3)
-    iter 00: masked=288  unmasked=4,320  masked%=6.25%  total=4,608
-    iter 01: masked=338  unmasked=4,270  masked%=7.34%  total=4,608
-    iter 02: masked=384  unmasked=4,224  masked%=8.33%  total=4,608
-    iter 03: masked=206  unmasked=4,402  masked%=4.47%  total=4,608
-    iter 04: masked=216  unmasked=4,392  masked%=4.69%  total=4,608
-    .
-    [blocked-3d] layout=ZYXC shape(Z,Y,X,C)=(128, 384, 384, 2) patch(T,Z,Y,X)=(1, 16, 16, 16) num_blocks=2 lateral_scale=(0.4, 0.5) axial_scale=(0.4, 0.5)
-    iter 00: masked=990  unmasked=3,618  masked%=21.48%  total=4,608
-    iter 01: masked=1,059  unmasked=3,549  masked%=22.98%  total=4,608
-    iter 02: masked=1,296  unmasked=3,312  masked%=28.12%  total=4,608
-    iter 03: masked=987  unmasked=3,621  masked%=21.42%  total=4,608
-    iter 04: masked=1,536  unmasked=3,072  masked%=33.33%  total=4,608
-    .
-    [blocked-3d] layout=ZYXC shape(Z,Y,X,C)=(128, 384, 384, 2) patch(T,Z,Y,X)=(1, 16, 16, 16) num_blocks=2 lateral_scale=(0.6, 0.7) axial_scale=(0.6, 0.7)
-    iter 00: masked=1,919  unmasked=2,689  masked%=41.64%  total=4,608
-    iter 01: masked=2,200  unmasked=2,408  masked%=47.74%  total=4,608
-    iter 02: masked=2,300  unmasked=2,308  masked%=49.91%  total=4,608
-    iter 03: masked=2,714  unmasked=1,894  masked%=58.90%  total=4,608
-    iter 04: masked=2,168  unmasked=2,440  masked%=47.05%  total=4,608
-    .
-    [blocked-3d] layout=ZYXC shape(Z,Y,X,C)=(128, 384, 384, 2) patch(T,Z,Y,X)=(1, 16, 16, 16) num_blocks=2 lateral_scale=(0.8, 0.9) axial_scale=(0.8, 0.9)
-    iter 00: masked=3,036  unmasked=1,572  masked%=65.89%  total=4,608
-    iter 01: masked=3,036  unmasked=1,572  masked%=65.89%  total=4,608
-    iter 02: masked=3,288  unmasked=1,320  masked%=71.35%  total=4,608
-    iter 03: masked=3,692  unmasked=916  masked%=80.12%  total=4,608
-    iter 04: masked=3,498  unmasked=1,110  masked%=75.91%  total=4,608
-    .
-    """
-    layout = MULTICHANNEL_HYPERCUBE.ZYXC  # channels last (Z,Y,X,C)
-    spatial_shape = (128, 384, 384)  # Z,Y,X
-    input_channels = 2
-    time_length = 1  # no time axis variation (3D volume)
-    temporal_patch_size = None  # ignored since T==1
-    lateral_patch_size = 16
-    axial_patch_size = 16
-
+def test_blocked_with_random_fill_partitions_patches(make_mask_generator):
+    """Every sample is split into exactly round(N * ratio) target patches and the
+    rest context; the index sets are disjoint, consistent with the 0/1 mask, and
+    original_patch_indices is a permutation of all patches."""
     mg = make_mask_generator(
-        maskmode=MaskModes.BLOCKED,
-        layout=layout,
-        time_length=time_length,
-        input_channels=input_channels,
-        spatial_shape=spatial_shape,
-        temporal_patch_size=temporal_patch_size,
-        lateral_patch_size=lateral_patch_size,
-        axial_patch_size=axial_patch_size,
-        # scales we vary per-param:
-        lateral_mask_scale=lateral_scale,
-        axial_mask_scale=axial_scale,
-        # temporal fixed (no T variation for ZYXC):
-        temporal_mask_scale=(1.0, 1.0),
-        # aspect ratio fixed to 1 to make area clearer (square H×W blocks):
-        aspect_ratio_scale_hw=(1.0, 1.0),
-        num_blocks=2,
-    )
-
-    total_len = mg.time * mg.depth * mg.height * mg.width
-    print(
-        f"\n[blocked-3d] layout={layout.name} shape(Z,Y,X,C)={(spatial_shape[0], spatial_shape[1], spatial_shape[2], input_channels)} "
-        f"patch(T,Z,Y,X)={(1, axial_patch_size, lateral_patch_size, lateral_patch_size)} "
-        f"num_blocks=2 lateral_scale={lateral_scale} axial_scale={axial_scale}"
-    )
-
-    # run a few iterations to see variability
-    for itr in range(5):
-        out = mg(batch_size=1)
-        mask = out["masks"][0]
-        n_unmasked = int((mask == 0).sum().item())
-        n_masked = int((mask == 1).sum().item())
-        print(
-            f"  iter {itr:02d}: masked={n_masked:,}  unmasked={n_unmasked:,}  "
-            f"masked%={100.0*n_masked/total_len:.2f}%  total={total_len:,}"
-        )
+        maskmode=MaskModes.BLOCKED_WITH_RANDOM_FILL, layout=MULTICHANNEL_HYPERCUBE.TZYXC,
+        time_length=4, spatial_shape=(16, 16, 16), lateral_patch_size=16, axial_patch_size=16)
+    B, N = 2, mg.time * mg.depth * mg.height * mg.width
+    n_tgt = round(N * mg.random_masking_ratio)
+    out = mg(batch_size=B)
+    assert out["masks"].shape == (B, N) and out["masks"].sum(1).tolist() == [n_tgt] * B
+    assert out["context_masks"].shape == (B, N - n_tgt) and out["target_masks"].shape == (B, n_tgt)
+    for b in range(B):
+        ctx, tgt = out["context_masks"][b], out["target_masks"][b]
+        assert not set(ctx.tolist()) & set(tgt.tolist())
+        assert (out["masks"][b, tgt] == 1).all() and (out["masks"][b, ctx] == 0).all()
+        assert sorted(out["original_patch_indices"][b].tolist()) == list(range(N))
+    assert torch.equal(out["patches_used"], torch.arange(N).expand(B, N))
+    assert out["mu_mask"] is None
 
 
-@pytest.mark.parametrize("maskmode", [MaskModes.BLOCKED_WITH_RANDOM_FILL])
-def test_blocked_with_random_fill_returns_dict(make_mask_generator, maskmode):
+def test_dino_ibot_masks_half_the_batch_at_ratio_range(make_mask_generator):
+    """With the defaults (mask_probability 0.5, mask_ratio_range (0.1, 0.5)) one
+    of two samples is masked, at the top of the ratio range; the flat index list,
+    weights, count and upper bound are all derived from that one mask."""
     mg = make_mask_generator(
-        maskmode=maskmode,
-        layout=MULTICHANNEL_HYPERCUBE.TZYXC,
-        time_length=4,
-        spatial_shape=(16, 16, 16),
-        lateral_patch_size=16,
-        axial_patch_size=16,
-    )
-    out = mg(batch_size=2)
-    assert isinstance(out, dict)
-    for k in ("masks", "context_masks", "target_masks", "original_patch_indices", "patches_used"):
-        assert k in out
+        maskmode=MaskModes.DINO_IBOT, layout=MULTICHANNEL_HYPERCUBE.TZYXC,
+        time_length=4, spatial_shape=(16, 16, 16), lateral_patch_size=16, axial_patch_size=16)
+    B, N = 2, mg.time * mg.depth * mg.height * mg.width
+    out = mg(batch_size=B)
+    cm = out["collated_masks"]
+    assert cm.shape == (B, N) and cm.dtype == torch.bool
+    per_sample = cm.sum(1)
+    n_masked = int(B * mg.mask_probability)                           # 1 of 2 samples
+    assert (per_sample > 0).sum().item() == n_masked
+    assert per_sample.max().item() == int(N * mg.mask_ratio_range[1])   # linspace top end for 1 sample
+    assert torch.equal(out["mask_indices_list"], cm.flatten().nonzero().flatten())
+    assert out["n_masked_patches"].item() == cm.sum().item() == out["upperbound"]
+    torch.testing.assert_close(out["masks_weight"],
+                               torch.full((int(cm.sum()),), 1.0 / per_sample.max().item()))
 
 
-@pytest.mark.parametrize("maskmode", [MaskModes.DINO_IBOT])
-def test_dino_ibot_returns_dict(make_mask_generator, maskmode):
+def test_hiera_mu_masks_whole_mask_units(make_mask_generator):
+    """Masking happens per mask unit: the patch-level mask is constant inside each
+    MU, kept MUs are context, and (with one token per MU) tgt_tok_idx lists
+    exactly the masked MUs."""
     mg = make_mask_generator(
-        maskmode=maskmode,
-        layout=MULTICHANNEL_HYPERCUBE.TZYXC,
-        time_length=4,
-        spatial_shape=(16, 16, 16),
-        lateral_patch_size=16,
-        axial_patch_size=16,
-    )
-    out = mg(batch_size=2)
-    assert isinstance(out, dict)
-    assert "collated_masks" in out or "mask_indices_list" in out
+        maskmode=MaskModes.HIERA_MU, layout=MULTICHANNEL_HYPERCUBE.TZYXC, time_length=4,
+        spatial_shape=(16, 16, 16), lateral_patch_size=8, axial_patch_size=8,
+        mask_unit_size=(1, 2, 2, 2), q_stride=(1, 2, 2, 2), q_pool=1)
+    B = 2
+    T, D, H, W = mg.time, mg.depth, mg.height, mg.width              # (4, 2, 2, 2)
+    n_mu, mu_flat = T, D * H * W                                     # 4 MUs of 8 patches
+    n_tgt = round(n_mu * mg.random_masking_ratio)
+    out = mg(batch_size=B)
+    mu_mask, keep = out["mu_mask"], out["mu_keep_idx"]
+    assert mu_mask.shape == (B, n_mu) and mu_mask.dtype == torch.bool
+    assert mu_mask.sum(1).tolist() == [n_tgt] * B
+    assert keep.shape == (B, n_mu - n_tgt)
+    for b in range(B):
+        assert not mu_mask[b, keep[b]].any()                          # kept MUs are context
+        per_mu = out["masks"][b].view(n_mu, mu_flat)                  # patch grid is T-major
+        assert torch.equal(per_mu.all(1), mu_mask[b]) and torch.equal(per_mu.any(1), mu_mask[b])
+        assert sorted(out["tgt_tok_idx"][b].tolist()) == mu_mask[b].nonzero().flatten().tolist()
 
 
-@pytest.mark.parametrize("maskmode", [MaskModes.HIERA_MU])
-def test_hiera_mu_returns_dict(make_mask_generator, maskmode):
-    mg = make_mask_generator(
-        maskmode=maskmode,
-        layout=MULTICHANNEL_HYPERCUBE.TZYXC,
-        time_length=4,
-        spatial_shape=(16, 16, 16),
-        lateral_patch_size=8,
-        axial_patch_size=8,
-        mask_unit_size=(1, 2, 2, 2),
-        q_stride=(1, 2, 2, 2),
-        q_pool=1,
-    )
-    out = mg(batch_size=2)
-    assert isinstance(out, dict)
-    assert "mu_mask" in out and "mu_keep_idx" in out and "tgt_tok_idx" in out
+def test_fresh_generators_replay_the_same_stream(make_mask_generator):
+    """step() seeds the block-SIZE draw from a per-instance counter that starts at
+    -1; block placement uses the global torch RNG (V-JEPA style). With the global
+    RNG pinned, two fresh generators therefore produce identical first masks, and
+    a second call on one of them (step seed advanced 0 -> 1) produces a different mask."""
+    def make():
+        return make_mask_generator(
+            maskmode=MaskModes.BLOCKED, layout=MULTICHANNEL_HYPERCUBE.TZYXC, time_length=8,
+            spatial_shape=(128, 128, 128), lateral_patch_size=16, axial_patch_size=16,
+            temporal_mask_scale=(0.3, 0.6), axial_mask_scale=(0.3, 0.6),
+            lateral_mask_scale=(0.3, 0.6), aspect_ratio_scale_hw=(1.0, 1.0))
+    a, b = make(), make()
+    torch.manual_seed(0)
+    first_a = a(batch_size=2)["masks"]
+    torch.manual_seed(0)
+    first_b = b(batch_size=2)["masks"]
+    assert first_a.any()                                  # a non-trivial block was drawn
+    assert torch.equal(first_a, first_b)                 # same step() seed on first call
+    torch.manual_seed(0)
+    second_a = a(batch_size=2)["masks"]
+    assert not torch.equal(second_a, first_a)            # only the step seed changed -> new block size

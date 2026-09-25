@@ -1,0 +1,9 @@
+# @package _global_
+# Final checkpoint of sam2_tile_adapt: unprompted AMG, one PDF per held-out validation cube (GT vs predicted boxes and masks).
+defaults:
+  - /experiments/janelia/sam2_study/stage1p5_tile/tile_adapt
+  - /experiments/janelia/sam2_study/eval/predict_overlay
+  - _self_
+experiment_name: infer_sam2_tile_adapt_final
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/stage2/sam2_tile_adapt/checkpoints   # copied final step dir

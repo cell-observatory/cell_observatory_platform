@@ -1,0 +1,6 @@
+# @package _global_
+# D: 3 correction clicks per step (recipe_r3 setting: batch 5/GPU fills VRAM).
+defaults: [/experiments/janelia/sam2_study/stage2_ablations/abl_base, _self_]
+experiment_name: abl_D_clicks3
+models: {meta_arch: {sam: {num_correction_pt_per_frame: 3}}}
+clusters: {batch_size: 40}

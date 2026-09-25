@@ -2,33 +2,16 @@ from __future__ import annotations
 
 import pytest
 import torch
-import torch.nn.functional as F
 
-pytest.importorskip("torch.cuda")
+pytestmark = pytest.mark.cuda
+_C = pytest.importorskip("ops3d._C", reason="ops3d extension not built")
 if not torch.cuda.is_available():
-    pytest.skip("CUDA not available", allow_module_level=True)
+    pytest.skip("CUDA device not available", allow_module_level=True)
 
 from cell_observatory_platform.models.ops.flash_deform_attn import (
     FlashDeformAttnFunction,
     ms_deform_attn_core_pytorch_3d,
 )
-
-try:
-    import ops3d._C as _C
-except ImportError:
-    print("FlashDeformAttnFunction op failed to load. Please compile ops3d if needed.")
-    pytestmark = pytest.mark.skip(reason="This module is temporarily disabled till we add ops3d to the docker image")
-
-
-# ---------------------------- HELPERS -------------------------------------
-
-
-def to_kernel_coords(locs):  # (..., d, h, w) -> (..., w, h, d)
-    return locs[..., [2, 1, 0]].contiguous()
-
-
-def from_kernel_grads(g_locs):  # (..., w, h, d) -> (..., d, h, w)
-    return g_locs[..., [2, 1, 0]]
 
 
 # ----------------------------- FIXED TESTING PARAMS -------------------------------------
@@ -72,8 +55,8 @@ def test_flash_backward_matches_reference():
     del value, packed, flash_out
     torch.cuda.empty_cache()
 
-    attn_soft = F.softmax(raw_attn_ref.flatten(-2, -1), dim=-1).unflatten(-1, (L, K))
-    ref_out = ms_deform_attn_core_pytorch_3d(value_ref, shapes, loc_ref, attn_soft)
+    # The helper now softmaxes internally (matching the kernel): pass RAW logits.
+    ref_out = ms_deform_attn_core_pytorch_3d(value_ref, shapes, loc_ref, raw_attn_ref)
     (ref_out.sum() / 10).backward()
 
     assert torch.allclose(g_val_flash, value_ref.grad, rtol=1e-2, atol=1e-3)

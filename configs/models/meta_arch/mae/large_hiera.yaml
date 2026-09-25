@@ -1,38 +1,43 @@
-# For backbone_type=hiera: depth is IGNORED (encoder depth = sum(hiera_stages) = 48)
+# @package models
+model: mae
 
-input_fmt: ${dataset_layout_order}
-input_shape: ${datasets.train_shape}
-patch_shape: ${datasets.patch_shape}
+meta_arch:
+  mae:
+    # For backbone_type=hiera: depth is IGNORED (encoder depth = sum(hiera_stages) = 48)
 
-embed_dim: 144
-num_heads: 2
-depth: 48
-mlp_ratio: 4.0
+    input_fmt: ${dataset_layout_order}
+    input_shape: ${datasets.train_shape}
+    patch_shape: ${datasets.patch_shape}
 
-decoder_embed_dim: 512
-decoder_depth: 8
-decoder_num_heads: 16
+    embed_dim: 144
+    num_heads: 2
+    depth: 48
+    mlp_ratio: 4.0
 
-proj_drop_rate: 0.0
-att_drop_rate: 0.0
-drop_path_rate: 0.1
-init_std: 0.02
-fixed_dropout_depth: false
-norm_layer: LayerNorm
-act_layer: SiLU
-mlp_layer: SwiGLU
-abs_sincos_enc: true
-rope_pos_enc: false
-rope_random_rotation_per_head: true
-rope_mixed: false
-rope_theta: 100.0
-weight_init_type: mae
-mlp_wide_silu: false
-loss_fn: l2_masked
-out_layers: null
+    decoder_embed_dim: 512
+    decoder_depth: 8
+    decoder_num_heads: 16
 
-backbone_type: hiera
-hiera_q_pool: 2
-hiera_q_stride: [2, 2, 2]
-hiera_stages: [2, 6, 36, 4]
-hiera_mask_unit_size: [8, 8, 8]
+    proj_drop_rate: 0.0
+    att_drop_rate: 0.0
+    drop_path_rate: 0.1
+    init_std: 0.02
+    fixed_dropout_depth: false
+    norm_layer: LayerNorm
+    act_layer: SiLU
+    mlp_layer: SwiGLU
+    abs_sincos_enc: true
+    rope_pos_enc: false
+    rope_random_rotation_per_head: true
+    rope_mixed: false
+    rope_theta: 100.0
+    weight_init_type: mae
+    mlp_wide_silu: false
+    loss_fn: l2_masked
+    out_layers: null
+
+    backbone_type: hiera
+    hiera_q_pool: 2
+    hiera_q_stride: [2, 2, 2]
+    hiera_stages: [2, 6, 36, 4]
+    hiera_mask_unit_size: [8, 8, 8]

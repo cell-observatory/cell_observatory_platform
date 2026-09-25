@@ -1,188 +1,125 @@
 import pytest
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from cell_observatory_platform.models.heads.dino_decoder import DeformableTransformerDecoderLayer, TransformerDecoder
 
-try:
-    from ops3d import _C
-    OPS3D_AVAILABLE = True
-except ImportError:
-    OPS3D_AVAILABLE = False
-    
-CUDA_AVAILABLE = torch.cuda.is_available()
+
+def _pyramid():
+    level_shapes = torch.tensor([[8, 8, 8], [4, 4, 4], [2, 2, 2]], dtype=torch.long)
+    tokens = level_shapes.prod(dim=1)
+    start = torch.cumsum(torch.cat([tokens.new_zeros(1), tokens[:-1]]), dim=0)
+    return level_shapes, start, int(tokens.sum())
 
 
-@pytest.mark.skipif(
-    not OPS3D_AVAILABLE,
-    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
-)
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
-def test_deformable_transformer_decoder_layer():
-    device = torch.device("cuda")
-
-    batch_size = 2
-    num_queries = 5
-    # NOTE: embed_dim/num_heads needs to be divisible by 8!
-    embed_dim = 64
-    num_levels = 3
-    num_heads = 8
-
+def test_decoder_layer_fallback_cross_attention_shapes():
+    """The default (non-deformable) layer runs on CPU through the pure-PyTorch
+    CrossAttention, keeps (Q, B, C), changes its output when self-attention is
+    removed, and refuses a non-trivial memory padding mask it cannot honour."""
+    torch.manual_seed(0)
+    Q, B, C, L = 5, 2, 64, 3  # embed_dim // num_heads must be a multiple of 8
     layer = DeformableTransformerDecoderLayer(
-        embed_dim=embed_dim,
-        feedforward_dim=64,
-        num_levels=num_levels,
-        num_heads=num_heads,
-    ).to(device)
-
-    # target: (num_queries, bs, embed_dim)
-    target = torch.randn(num_queries, batch_size, embed_dim, device=device)
-    target_pos = torch.randn_like(target)
-
-    # 3D feature map shapes per level (D, H, W)
-    level_shapes = torch.tensor(
-        [
-            [32, 32, 32],  # finest
-            [16, 16, 16],
-            [8, 8, 8],  # coarsest
-        ],
-        dtype=torch.long,
-        device=device,
-    )  # (num_levels, 3)
-
-    # flatten levels into a single sequence for memory
-    num_tokens_per_level = level_shapes.prod(dim=1)  # (num_levels,)
-    level_start_index = torch.cumsum(
-        torch.cat(
-            [
-                torch.zeros(1, dtype=torch.long, device=device),
-                num_tokens_per_level[:-1],
-            ]
-        ),
-        dim=0,
-    )  # (num_levels,)
-    num_tokens = int(num_tokens_per_level.sum().item())
-
-    # memory: (dhw, bs, embed_dim)
-    memory = torch.randn(num_tokens, batch_size, embed_dim, device=device)
-
-    # reference points per query, per batch, per level, 3D coords in [0, 1]
-    # shape: (num_queries, bs, num_levels, 3)
-    target_reference_points = torch.rand(num_queries, batch_size, num_levels, 3, device=device)
-
-    # key padding mask for memory: (bs, num_tokens)
-    memory_key_padding_mask = torch.zeros(batch_size, num_tokens, dtype=torch.bool, device=device)
-
-    out = layer(
-        target=target,
-        target_query_pos_embeddings=target_pos,
-        target_reference_points=target_reference_points,
-        memory=memory,
-        memory_key_padding_mask=memory_key_padding_mask,
-        memory_level_start_index=level_start_index,
-        # FlashDeformAttn3D expects (n_levels, 3)
+        embed_dim=C, feedforward_dim=64, dropout=0.0, num_levels=L, num_heads=8,
+    ).eval()
+    level_shapes, start, n_tok = _pyramid()
+    kw = dict(
+        target_query_pos_embeddings=torch.randn(Q, B, C),
+        target_reference_points=torch.rand(Q, B, L, 3),
+        memory=torch.randn(n_tok, B, C),
+        memory_key_padding_mask=torch.zeros(B, n_tok, dtype=torch.bool),
+        memory_level_start_index=start,
         memory_shapes=level_shapes,
     )
+    target = torch.randn(Q, B, C)
 
-    assert out.shape == (num_queries, batch_size, embed_dim)
+    out = layer(target=target, **kw)
+    assert out.shape == (Q, B, C) and torch.isfinite(out).all()
 
-    # also check that removing self-attn still preserves shapes
     layer.remove_self_attn_modules()
-    out_no_self = layer(
-        target=target,
-        target_query_pos_embeddings=target_pos,
-        target_reference_points=target_reference_points,
-        memory=memory,
-        memory_key_padding_mask=memory_key_padding_mask,
-        memory_level_start_index=level_start_index,
-        memory_shapes=level_shapes,
-    )
-    assert out_no_self.shape == (num_queries, batch_size, embed_dim)
+    out_no_self = layer(target=target, **kw)
+    assert out_no_self.shape == (Q, B, C)
+    assert not torch.allclose(out, out_no_self)  # the self-attention branch really contributed
+
+    # the fallback path does not consume a padding mask; it must refuse a padded one
+    padded = torch.ones(B, n_tok, dtype=torch.bool)
+    with pytest.raises(NotImplementedError, match="memory_key_padding_mask"):
+        layer(target=target, **{**kw, "memory_key_padding_mask": padded})
 
 
-@pytest.mark.skipif(
-    not OPS3D_AVAILABLE,
-    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
-)
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
-def test_transformer_decoder():
-    device = torch.device("cuda")
-
-    batch_size = 2
-    num_queries = 5
-    embed_dim = 64
-    num_levels = 3
-    num_heads = 8
-    query_dim = 6  # (x, y, z, w, h, d)
-
-    base_layer = DeformableTransformerDecoderLayer(
-        embed_dim=embed_dim,
-        feedforward_dim=64,
-        num_levels=num_levels,
-        num_heads=num_heads,
+def test_transformer_decoder_returns_per_layer_outputs_and_refined_reference_points():
+    """Without bbox_embed the decoder returns one normed output per layer and only the
+    sigmoided initial reference points; with one delta head per layer each layer
+    appends a refined, still-sigmoided reference set."""
+    torch.manual_seed(0)
+    Q, B, C, L, num_layers, query_dim = 5, 2, 64, 3, 2, 6
+    layer = DeformableTransformerDecoderLayer(
+        embed_dim=C, feedforward_dim=64, dropout=0.0, num_levels=L, num_heads=8,
     )
     decoder = TransformerDecoder(
-        decoder_layer=base_layer,
-        num_layers=2,
-        norm=nn.LayerNorm(embed_dim),
-        embed_dim=embed_dim,
-        query_dim=query_dim,
-        num_feature_levels=num_levels,
-        deformable_decoder=True,
-    ).to(device)
+        decoder_layer=layer, num_layers=num_layers, norm=nn.LayerNorm(C), embed_dim=C,
+        query_dim=query_dim, num_feature_levels=L, deformable_decoder=True,
+    ).eval()
+    level_shapes, start, n_tok = _pyramid()
+    kw = dict(
+        memory=torch.randn(n_tok, B, C), level_start_index=start, shapes=level_shapes,
+        valid_ratios=torch.ones(B, L, 3),
+    )
+    target = torch.randn(Q, B, C)
+    reference_points = torch.randn(Q, B, query_dim)  # pre-sigmoid, as the forward expects
+
     decoder.bbox_embed = None
+    outputs, refs = decoder(target=target, reference_points=reference_points, **kw)
+    assert len(outputs) == num_layers
+    assert all(o.shape == (B, Q, C) and torch.isfinite(o).all() for o in outputs)
+    assert len(refs) == 1  # no refinement: only the sigmoided initial points, batch-first
+    torch.testing.assert_close(refs[0], reference_points.sigmoid().transpose(0, 1))
 
-    # target: (num_queries, bs, embed_dim)
-    target = torch.randn(num_queries, batch_size, embed_dim, device=device)
+    # with one delta head per layer, each layer appends a refined reference set
+    decoder.bbox_embed = nn.ModuleList([nn.Linear(C, query_dim) for _ in range(num_layers)])
+    outputs, refs = decoder(target=target, reference_points=reference_points, **kw)
+    assert len(outputs) == num_layers
+    assert len(refs) == num_layers + 1
+    assert all(r.shape == (B, Q, query_dim) for r in refs)
+    assert all(((r >= 0) & (r <= 1)).all() for r in refs)  # refined points stay sigmoided
+    assert not torch.allclose(refs[1], refs[0])
 
-    # same realistic 3D shapes as above: (num_levels, 3)
-    level_shapes = torch.tensor(
-        [
-            [32, 32, 32],
-            [16, 16, 16],
-            [8, 8, 8],
-        ],
-        dtype=torch.long,
-        device=device,
+
+def test_transformer_decoder_rejects_query_dim_other_than_6():
+    """Only the 6-D (x, y, z, w, h, d) query path is implemented; query_dim=3 is refused."""
+    layer = DeformableTransformerDecoderLayer(
+        32, 64, 0.0, nn.ReLU(), 1, 4, 4, use_deform_attention=False,
     )
+    with pytest.raises(NotImplementedError, match="query_dim"):
+        TransformerDecoder(
+            layer, 1, nn.LayerNorm(32), return_intermediates=True,
+            embed_dim=32, query_dim=3, num_feature_levels=1,
+            share_decoder_layers=False,
+        )
 
-    # flatten levels for memory
-    num_tokens_per_level = level_shapes.prod(dim=1)  # (num_levels,)
-    level_start_index = torch.cumsum(
-        torch.cat(
-            [
-                torch.zeros(1, dtype=torch.long, device=device),
-                num_tokens_per_level[:-1],
-            ]
-        ),
-        dim=0,
-    )  # (num_levels,)
-    num_tokens = int(num_tokens_per_level.sum().item())
 
-    # memory: (dhw, bs, embed_dim)
-    memory = torch.randn(num_tokens, batch_size, embed_dim, device=device)
+def _polarity_probe(build_attn_mask):
+    """MHA-semantics mask (True = CANNOT attend) -> SDPA -> weights ~0 there."""
+    L = 2
+    mha_mask = torch.tensor([[False, True], [False, False]])  # q0 must not see k1
+    attn_mask = build_attn_mask(mha_mask, torch.device("cpu"))
+    assert attn_mask is not None
 
-    # initial reference points: (num_queries, bs, query_dim)
-    reference_points = torch.rand(num_queries, batch_size, query_dim, device=device)
+    torch.manual_seed(0)
+    q = torch.randn(1, 1, L, 8)
+    k = torch.randn(1, 1, L, 8)
+    # v one-hot per key so the output reveals the attention weights
+    v = torch.eye(L).reshape(1, 1, L, L)
+    out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+    weights = out[0, 0]  # (Lq, Lk) attention weights
+    assert weights[0, 1].abs().item() < 1e-6, "blocked key still attended"
+    assert abs(weights[0, 0].item() - 1.0) < 1e-6
+    assert abs(weights[1].sum().item() - 1.0) < 1e-5
 
-    # valid ratios per feature level: (B, L, 3) == (w_ratio, h_ratio, d_ratio)
-    # all ones -> everything valid (no padding)
-    valid_ratios = torch.ones(batch_size, num_levels, 3, device=device)
 
-    outputs, ref_points_out = decoder(
-        target=target,
-        memory=memory,
-        reference_points=reference_points,
-        level_start_index=level_start_index,
-        shapes=level_shapes,
-        valid_ratios=valid_ratios,
+def test_decoder_layer_attn_mask_true_blocks_attention():
+    """The layer's SDPA mask keeps nn.MultiheadAttention semantics: True = cannot attend."""
+    layer = DeformableTransformerDecoderLayer(
+        embed_dim=64, num_heads=8, use_deform_attention=False
     )
-
-    # outputs is a list (per layer) of (bs, num_queries, embed_dim)
-    assert len(outputs) == 2
-    for out in outputs:
-        assert out.shape == (batch_size, num_queries, embed_dim)
-
-    # ref_points_out is a list of reference point tensors; here just the initial one
-    assert len(ref_points_out) == 1
-    assert ref_points_out[0].shape == (batch_size, num_queries, query_dim)
+    _polarity_probe(layer._build_attn_mask)

@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.backbones.sam_backbone.BUILD
+name: sam
 
 # When use_sam_channel_projection: true, backbone_embed_dims is projector output (e.g. 384)
 backbone_embed_dims:

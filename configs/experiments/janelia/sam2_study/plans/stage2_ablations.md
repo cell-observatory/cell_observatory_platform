@@ -1,0 +1,111 @@
+# Stage 2 — channel parametrisation, channel dropout, interaction protocol
+
+2026-09-09 · status: **configs written, gate minis launched** · configs: `stage2_ablations/` · base: `recipe/recipe_r1` + lr 2e-4, 6 epochs
+
+## 1. What we are investigating and why
+
+Which way of feeding the 5 channels to the ViT, whether dropping channels at train time helps robustness, and how many simulated
+clicks the training protocol needs. Now because the LR sweep is settled (`stage1_lr_plan.md`: 2e-4 / 4e-4 / 1e-4 all reach val
+0.40–0.41 by epoch 7; Hugo picked 2e-4 for its faster early convergence) and the sweep plateaued by epoch ~6, so ablations get a
+**6-epoch** schedule instead of 20. Evidence for the variants: setup sweep (`setup_sweep.md`): attn-pool costs the same as the
+joint embed, concat 5.4× (deferred), dropout free, 3 clicks = bs 5/GPU.
+
+## 2. Runs
+
+Variable per run (one change each vs the baseline); one B300 node per run, chains of 4 h links:
+
+| run | change | bs/GPU |
+|---|---|---|
+| `abl_baseline` | none: joint embed, 1 click, gt-prob 0.1 | 8 |
+| `abl_A1_attnpool_factorized` | per-channel tokens + factorized (localization × fluorophore) embedding, attn-pool fusion | 8 |
+| `abl_A1_attnpool_none` | per-channel tokens, no channel identity | 8 |
+| `abl_A3_membrane_only` | C = 1 (membrane) | 8 |
+| `abl_A3_cytosol_only` | C = 4 (cytosol) | 8 |
+| `abl_B_dropout_0p25_shuffle` | ChannelDropout p 0.25 + shuffle on A1-factorized | 8 |
+| `abl_B_dropout_0p5_shuffle` | ChannelDropout p 0.5 + shuffle on A1-factorized | 8 |
+| `abl_D_clicks0` | 0 correction clicks | 8 |
+| `abl_D_clicks3` | 3 correction clicks | 5 |
+| `abl_D_gtprob0p0` | correction click never from GT | 8 |
+| `abl_D_gtprob0p3` | correction click from GT with p 0.3 | 8 |
+
+**E: signal-to-noise (added 2026-09-09 evening, Hugo: 500-5000 counts is the realistic low-to-high signal range).** The rendered
+intensities are treated as photons; the sensor model gives ~3.73 counts/photon + 100 offset and 8.8 e⁻ read noise, so the
+baseline sits at the high end: membrane median 670-1370 photons = 2500-5100 counts (SNR 22-32), membrane floor ~220 photons
+(SNR 11), cytosol median ~400 photons (SNR 16); SNR = QE·S / sqrt(QE·S + 8.8²). `MixedPoissonGaussianNoise.photon_scale` (new)
+scales the photons before the sensor (the two sanity cubes of `psf_noise_check_realpsf/stats.txt` give the photon numbers).
+
+| run | photon_scale | membrane median signal | SNR (membrane median / floor) |
+|---|---|---|---|
+| `abl_baseline` (= high) | 1 | 2500-5100 counts | 22-32 / 11 |
+| `abl_E_snr_1500` | 0.35 | 900-1800 counts | 11-17 / 4.7 |
+| `abl_E_snr_500` | 0.1 | 250-500 counts | 5-8 / 1.8 |
+| `abl_E_snr_rand` | U[0.1, 1.0] per sample | 250-5100 counts | augmentation |
+
+Evaluation for E: every checkpoint (baseline, the three E runs) is evaluated at photon_scale 1 / 0.35 / 0.1 (eval-only, cheap)
+-> a 4×3 mAP matrix: does low-SNR training hurt at high SNR, and does the range-augmented model cover all three.
+
+Deferred: concat fusion (5.4× cost, only if A1 wins), no-shuffle dropout variants, box prompts (needs the collator box format).
+
+Held constant: recipe_r1 (1 click, low-res click loop, GEMM up/down-scaling, criterion ckpt off, mm 48, uniform eval sampling,
+PSF + sensor noise, 2 excluded tiles), lr 2e-4, wd 2e-5, warm-up 1 epoch, cosine to 5 %, **6 epochs**, split 0.02, seed 42,
+full 128×384×512 set (30,768 rows per rank), 55-min + per-epoch checkpoints, `chain_jobs: 6`.
+
+Budget: 6 epochs × 2.4 h = 14.5 h per run (4 links) × 11 runs ≈ 160 node-hours. Gate minis (`mini_channel`, `mini_clicks3`,
+`mini_clicks0`, `mini_membrane`; 1024 rows, 2 epochs, 15-min links) run first, one per new code path.
+
+## 3. How we evaluate
+
+Val loss (total and dice) per epoch, decision at epoch 6 vs the baseline; Δ = 0.01–0.02 is noise (the LR sweep's spread at
+convergence). Held-out mAP (`eval/test_heldout`, being written) on the epoch-6 checkpoints for the top candidates. Rules: A
+winner = lowest val at 6 (attn-pool must beat joint by > Δ to justify the vocab machinery); B is judged on top of A1; D: fewer clicks
+win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
+
+## 4. Data
+
+| run | epochs | val total @6 | val dice @6 | train @6 | wall-clock | notes |
+|---|---|---|---|---|---|---|
+| (per epoch: `python scripts/utils/epoch_table.py --runs $DATA_DIR/sam2_study/stage2_ablations/abl_* --md`) | | | | | | |
+| `S2_baseline` | 1 | 0.801 | 0.467 | 1.49 | 2.26 h/epoch | val iou 0.130 |
+| `A3_membrane_only` | 1 | 0.740 | 0.440 | 1.35 | 1.93 h/epoch | val iou 0.125 |
+| `A3_cytosol_only` | 1 | 1.098 | 0.683 | 1.78 | 2.17 h/epoch | val iou 0.175; no membrane = large loss |
+| `B_dropout_0p5_shuffle` | 1 | 0.739 | 0.446 | 1.37 | 2.32 h/epoch | val iou 0.127; attn_pool + factorized, same cost as joint |
+| `D_gtprob0p0` | 1 | 0.821 | 0.498 | 1.50 | 2.27 h/epoch | val iou 0.148 |
+| `D_gtprob0p3` | 1 | 0.823 | 0.466 | 1.52 | 2.27 h/epoch | val iou 0.149; 0.0 / 0.1 / 0.3 within noise at epoch 1 |
+| `D_clicks0` | 1 | 0.510 | 0.300 | 0.88 | 1.80 h/epoch | val iou 0.094; NOT comparable: the loss is a SUM over prediction rounds (1 here, 2 for 1 click, 4 for 3 clicks) -> mAP decides D |
+| `D_clicks3` | 1 | 1.163 | 0.712 | 2.14 | 3.41 h/epoch | val iou 0.208; 4 rounds summed = 0.29/round vs 0.40 (1 click) and 0.51 (0 clicks); bs 40, 1.45 s/step -> 6 epochs = 20 h |
+| `S2_baseline` | 2 | 0.523 | 0.319 | 0.54 | | val iou 0.098 |
+| `A3_membrane_only` | 2 | 0.520 | 0.305 | 0.49 | | val iou 0.110; tied with the baseline |
+| `D_clicks0` | 2 | 0.322 | 0.183 | 0.39 | | val iou 0.065 (1 round) |
+| `A3_cytosol_only` | 2 | 0.754 | 0.462 | 0.77 | | val iou 0.134 |
+| `B_dropout_0p5_shuffle` | 2 | 0.534 | 0.301 | 0.50 | | val iou 0.116 |
+| `D_gtprob0p0` | 2 | 0.532 | 0.304 | 0.54 | | val iou 0.122 |
+| `A1_attnpool_factorized` | 1 | 0.750 | 0.467 | 1.33 | 2.31 h/epoch | val iou 0.126; same cost as joint |
+| `A3_membrane_only` | 3 | 0.464 | 0.276 | 0.43 | | val iou 0.092 |
+| `S2_baseline` | 6 (final) | 0.330 | 0.200 | 0.27 | 6 ep = ~14 h + queue | val iou 0.061; final ckpt step-23076 |
+| `A3_membrane_only` | 6 (final) | 0.329 | 0.197 | 0.26 | | val iou 0.063; = baseline |
+| `D_clicks0` | 6 (final) | 0.171 | 0.101 | 0.17 | | 1 round; final ckpt step-23076, eval submitted |
+| `D_gtprob0p0` | 6 (final) | 0.333 | 0.198 | 0.27 | | = baseline (0.330 / 0.200); eval submitted |
+| `A3_cytosol_only` | 6 (final) | 0.426 | 0.259 | 0.39 | | no membrane channel; eval submitted |
+| `D_gtprob0p3` | 6 (final) | 0.333 | 0.201 | 0.27 | | eval submitted |
+| `B_dropout_0p25_shuffle` | 6 (final) | 0.324 | 0.195 | 0.26 | | best prompted val so far (baseline 0.330 / 0.200); eval submitted |
+| `A1_attnpool_factorized` | 6 (final) | 0.323 | 0.196 | 0.26 | | eval submitted; seeds `tile_adapt_chattn` |
+| `B_dropout_0p5_shuffle` | 6 (final) | 0.324 | 0.196 | 0.26 | | eval submitted |
+| `A1_attnpool_none` | 6 (final) | 0.333 | 0.200 | 0.26 | | no channel identity; eval submitted |
+| `D_clicks3` | 6 (final) | 0.629 | 0.392 | 0.41 | 6 x 3.4 h | 4 rounds summed (0.16/round vs baseline 0.165/round); eval submitted 09-12 |
+| `E_snr_1500` | 6 (final) | 0.323 | 0.195 | 0.28 | | validated at its own noise level; eval submitted 09-12 |
+| `E_snr_500` | 6 (final) | 0.348 | 0.211 | 0.29 | | validated at its own noise level |
+| `E_snr_rand` | 6 (final) | 0.344 | 0.205 | 0.27 | | validated at random noise levels |
+| **held-out mAP (final ckpt, 128 val cubes, AMG 8³ lattice)** | | | | | | baseline **0.645** (recall 0.695, mIoU 0.948); membrane-only **0.651** (recall 0.700); gt-prob 0.3 **0.644** (recall 0.697); gt-prob 0.0 **0.640**; cytosol-only **0.608**; attn-pool + factorized embed **0.641**; dropout 0.25 (attn-pool, scored on all channels) **0.646**; dropout 0.5 **0.643**; attn-pool without channel identity **0.637**; Stage-1 epoch-6 reference 0.624; **16³ lattice**: baseline 0.741 (recall 0.884, 39 s/cube); **0-click: 0.000, zero predictions** (AMG's mask-to-mask refinement feeds a mask prompt the 0-click model never saw in training -> every candidate filtered; re-scored: filters off + no m2m -> **0.623**, recall 0.69, precision 0.99, 18k preds, IoU-head Spearman 0.74 (baseline 0.91): the masks are fine, m2m off + default filters -> **0.617**, recall 0.68, 4,955 preds: the culprit is the mask-to-mask refinement, which feeds a mask prompt the 0-click model never trained on; the correction round buys the mask-prompt path and ~0.03 mAP) |
+| epoch-4 dice | | | | | | baseline 0.247, membrane 0.221, gtprob0 0.229, dropout0.5 0.232, gtprob0.3 0.254, cytosol 0.328 |
+| epoch-3 dice | | | | | | baseline 0.267, A1 factorized 0.239, dropout0.25 0.241, snr1500 0.295, A1 none (ep 2) 0.315 |
+| epoch-1 dice, SNR family (each validated at its own noise level) | | | | | | baseline 0.467, snr1500 0.488, snr500 0.500, snr-range 0.511 |
+
+Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
+
+| when | what | fix |
+|---|---|---|
+| 16:35 | `mini_clicks0`: `sam_outputs` unbound with 0 correction clicks | 9721380: loop skipped -> prompt-only prediction is final |
+| 16:57 | `A1_attnpool_factorized`, `B_dropout_0p25_shuffle` link 1: channel_vocab refused the empty `<outdir>/checkpoints` resume dir | 49ae779: empty resume dir = fresh start; relaunched |
+| 17:00 | all 11 chains submitted (10 + `D_clicks0` after its smoke); 8 nodes -> ~half queued, links interleave | – |
+
+Reflections: (fill)

@@ -1,8 +1,32 @@
 import torch
 
+# Semantic-stage targets are Form D (role-keyed dict of batched maps) -- see
+# data/data_types.py for the Form D / Form S nomenclature.
+
+
+def _source_slice(targets: dict, role: str) -> torch.Tensor:
+    """The batched ``(B, D, H, W)`` map published under ``role``. Fails hard if the
+    role isn't in the Form-D dict."""
+    if role not in targets:
+        raise KeyError(f"targets {list(targets)} has no source role {role!r}")
+    return targets[role]
+
+
+def _append_map(targets: dict, m: torch.Tensor, role: str) -> None:
+    """Publish a derived batched ``(B, D, H, W)`` map under a new role key."""
+    targets[role] = m
+
+
 class DeepCopyInputsAsTargets:
-    def __init__(self):
-        pass
+    # Snapshots the image as a REGRESSION TARGET (the clean reference for
+    # denoising), so the counts it copies are a label rather than an
+    # intermediate: quantizing them degrades what the loss is measured against.
+    reads_raw_counts = True
+
+    def __init__(self, role: str = "denoising"):
+        # Form-D role the clone is published under; must match the preprocessor's
+        # recon_role (both default to "denoising" so stock configs can't drift).
+        self.role = role
 
     def __call__(self, data: dict) -> dict:
         if not isinstance(data, dict):
@@ -13,11 +37,13 @@ class DeepCopyInputsAsTargets:
             data["metainfo"] = {}
         # if "targets" in data["metainfo"] and data["metainfo"]["targets"] is not None:
         #     raise ValueError("targets already exists in metainfo")
-        data["metainfo"]["targets"] = [data["data_tensor"].clone()]
+        data["metainfo"]["targets"] = {self.role: data["data_tensor"].clone()}
         return data
-    
+
 class InstanceToBoundaryMask:
-    def __init__(self, connectivity: int = 1):
+    def __init__(self, source_role: str, connectivity: int = 1):
+        # Which Form-D role to derive boundaries from.
+        self.source_role = source_role
         self.connectivity = connectivity
 
         # Build shifts for 3D connectivity:
@@ -45,25 +71,22 @@ class InstanceToBoundaryMask:
                             shifts.append((dz, dy, dx))
                     else:
                         raise ValueError("connectivity must be 1, 2, or 3 for 3D")
-                    
+
         self.shifts = shifts
-    
+
     def _one_hot_encode_labels(self, labels: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.one_hot(labels, num_classes=int(labels.max() + 1))
 
-    def __call__(self, data: dict | torch.Tensor) -> dict | torch.Tensor:
-        if isinstance(data, dict):
-            if "masks_labelmap" not in data:
-                raise KeyError("InstanceToBoundaryMask expects 'masks_labelmap' in dict.")
-            boundary_masks = self._instance_to_boundary_mask(data["masks_labelmap"])
-            data["boundary_masks"] = boundary_masks
-            return data
-        elif isinstance(data, torch.Tensor):
-            return self._instance_to_boundary_mask(data)
-        else:
-            raise ValueError(f"InstanceToBoundaryMask expects dict or torch.Tensor, got {type(data)}")
-        
-    
+    def __call__(self, data: dict) -> dict:
+        # Read the batched source role, compute boundaries batched, publish the
+        # derived map under its own role -- one assignment, no per-sample loop.
+        targets = data["metainfo"]["targets"]
+        src = _source_slice(targets, self.source_role).to(torch.int32)
+        boundary = self._instance_to_boundary_mask(src)  # (B, D, H, W) bool
+        _append_map(targets, boundary, "boundary")
+        return data
+
+
     def _instance_to_boundary_mask(self, labels: torch.Tensor) -> torch.Tensor:
         """
         labels: (B,D,H,W) int (instance/semantic labels; background can be 0).
@@ -91,29 +114,26 @@ class InstanceToBoundaryMask:
 
 
 class ForegroundMasks:
-    def __init__(self, remove_boundary: bool = True):
+    def __init__(self, source_role: str, remove_boundary: bool = True):
+        # Which Form-D role to derive foreground from.
+        self.source_role = source_role
         self.remove_boundary = remove_boundary
 
-    def __call__(self, data: dict | torch.Tensor) -> dict | torch.Tensor:
-        if isinstance(data, dict):
-            if "masks_labelmap" not in data:
-                raise KeyError("ForegroundMasks expects 'masks_labelmap' in dict.")
-            if self.remove_boundary:
-                if "boundary_masks" not in data:
-                    raise KeyError("ForegroundMasks expects 'boundary_masks' in dict.")
-                foreground_masks = self._foreground_masks(data["masks_labelmap"], data["boundary_masks"])
-            else:
-                foreground_masks = self._foreground_masks(data["masks_labelmap"])
-            data["foreground_masks"] = foreground_masks
-            return data
-        elif isinstance(data, torch.Tensor):
-            if self.remove_boundary:
-                raise ValueError("ForegroundMasks does not support tensor input if remove_boundary=True. Use dict input containing key 'boundary_masks' instead.")
-            else:
-                self._foreground_masks(data)
+    def __call__(self, data: dict) -> dict:
+        # Read the batched source role (and the derived "boundary" role when
+        # removing boundaries), compute foreground batched, publish under its role.
+        targets = data["metainfo"]["targets"]
+        src = _source_slice(targets, self.source_role).to(torch.int32)
+        if self.remove_boundary:
+            # TODO: rename once DB roles table lands.
+            bm = _source_slice(targets, "boundary")  # (B, D, H, W)
+            foreground = self._foreground_masks(src, bm)
         else:
-            raise ValueError(f"ForegroundWithoutBoundaryMask expects dict or torch.Tensor, got {type(data)}")
-        
+            foreground = self._foreground_masks(src)
+        # TODO: rename once DB roles table lands.
+        _append_map(targets, foreground, "foreground")
+        return data
+
     def _foreground_masks(self, labels: torch.Tensor, boundary_masks: torch.Tensor | None = None) -> torch.Tensor:
         """
         labels: (B,D,H,W) int (instance/semantic labels; background can be 0).
@@ -122,14 +142,17 @@ class ForegroundMasks:
         """
         if labels.dim() != 4:
             raise ValueError(f"labels must be a 4D tensor assumed to be (B,D,H,W), got {labels.shape}")
-        
+
         B, D, H, W = labels.shape
         x = labels
 
         foreground_masks = torch.zeros((B, D, H, W), dtype=torch.bool, device=x.device)
-        
+
         if boundary_masks is not None:
-            foreground_masks = (x != 0) & ~boundary_masks
+            # boundary_masks is a bool role published by InstanceToBoundaryMask;
+            # keep the explicit .bool() so an int-typed map (e.g. loaded from
+            # storage) still gets a LOGICAL not, never a bitwise one.
+            foreground_masks = (x != 0) & ~boundary_masks.bool()
         else:
             foreground_masks = (x != 0)
 

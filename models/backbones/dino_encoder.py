@@ -21,6 +21,8 @@ from cell_observatory_platform.models.layers.layer_scale import LayerScale
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding
 from cell_observatory_platform.models.layers.positional_encoding import RopePositionEmbedding
 
+logger = logging.getLogger(__name__)
+
 # ffn_layer_dict = {
 #     "mlp": Mlp,
 #     "swiglu": SwiGLUFFN,
@@ -131,6 +133,20 @@ class DinoEncoder(nn.Module):
         if self.n_storage_tokens > 0:
             self.storage_tokens = nn.Parameter(torch.empty(1, n_storage_tokens, embed_dim, device=device))
 
+        # apply_rope_v1 (axial/mixed) does not slice register/cls tokens off the
+        # sequence before rotating; only custom (apply_rope_v2) computes
+        # prefix = N - sin.shape[-2] and passes prefix tokens through unrotated.
+        # This encoder ALWAYS carries prefix tokens (1 cls + n_storage_tokens
+        # registers), so axial/mixed would rotate them with grid frequencies
+        # (silent wrong PE or shape mismatch). Restrict to custom until v1
+        # prefix slicing is implemented.
+        if rope_type != "custom":
+            raise ValueError(
+                f"DinoEncoder carries {1 + self.n_storage_tokens} prefix tokens and "
+                f"requires rope_type='custom' (axial/mixed do not slice prefix tokens "
+                f"before rotating); got rope_type={rope_type!r}."
+            )
+
         self.rope_embed = RopePositionEmbedding(
             input_fmt=self.input_fmt,
             embed_dim=embed_dim,
@@ -195,7 +211,7 @@ class DinoEncoder(nn.Module):
         self.mask_token = nn.Parameter(torch.empty(1, embed_dim, device=device))
 
     def init_weights(self):
-        self.apply(self._init_model_weights)
+        self._init_model_weights()
 
     def _init_model_weights(self):
         self.rope_embed._init_model_weights()
@@ -258,11 +274,15 @@ class DinoEncoder(nn.Module):
             x.append(t2_x)
             rope.append(input_shape)
 
-        for _, blk in enumerate(self.blocks):
-            if self.rope_embed is not None:
-                rope_sincos = [self.rope_embed(shape=input_shape) for input_shape in rope]
-            else:
-                rope_sincos = [None for _ in rope]
+        # Compute rope ONCE per forward: the embedding draws random train-time
+        # coordinate augmentations (shift/jitter/rescale), which must be shared
+        # by every block (DINOv3 semantics), not resampled per layer — and the
+        # sin/cos rebuild is depth× redundant.
+        if self.rope_embed is not None:
+            rope_sincos = [self.rope_embed(shape=input_shape) for input_shape in rope]
+        else:
+            rope_sincos = [None for _ in rope]
+        for blk in self.blocks:
             x = blk(x, pos_enc=rope_sincos)
 
         all_x = x
@@ -312,12 +332,13 @@ class DinoEncoder(nn.Module):
         # NOTE: If n is an int, we take the n last blocks. If it's a list, we take those layers.
         output, total_block_len = [], len(self.blocks)
         blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
+        # Rope once per forward (shared random augs across blocks) — see
+        # forward_features_list.
+        if self.rope_embed is not None:
+            rope_sincos = self.rope_embed(shape=input_shape)
+        else:
+            rope_sincos = None
         for i, blk in enumerate(self.blocks):
-            if self.rope_embed is not None:
-                rope_sincos = self.rope_embed(shape=input_shape)
-            else:
-                rope_sincos = None
-
             x = blk(x, pos_enc=rope_sincos)
             if i in blocks_to_take:
                 output.append(x)

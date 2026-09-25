@@ -1,5 +1,7 @@
 import logging
 import os
+import shutil
+import socket
 import sys
 import time
 from pathlib import Path
@@ -7,7 +9,7 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 from hydra import compose, initialize
-from hydra.utils import get_method, instantiate
+from hydra.utils import get_method
 from omegaconf import DictConfig, OmegaConf
 
 try:
@@ -22,57 +24,126 @@ from ray.util import list_named_actors
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
 
+from cell_observatory_platform.tests.ray_init_helpers import local_cwd_for_ray_start
 from cell_observatory_platform.utils.cleanup import unlink_shared_memory
 from cell_observatory_platform.utils.container import get_container_info
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Update environment variables
-os.environ["HYDRA_FULL_ERROR"] = "1"
-os.environ["RAY_DEDUP_LOGS"] = "0"
-os.environ["NCCL_DEBUG"] = "TRACE"
-os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
-os.environ["NCCL_DEBUG_SUBSYS"] = "GRAPH"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["NCCL_CUMEM_ENABLE"] = "0"
-os.environ["NCCL_CROSS_NIC"] = "1"
-os.environ["NCCL_P2P_LEVEL"] = "NVL"
-os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_SEC"] = "3600"
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
 
 
-def _sdpa_kernel_with_math_fallback(backends):
-    """Add MATH fallback for tests when Flash Attention isn't available."""
-    from torch.nn.attention import SDPBackend, sdpa_kernel as _sdpa_kernel
-
-    if SDPBackend.FLASH_ATTENTION in backends and SDPBackend.MATH not in backends:
-        backends = list(backends) + [SDPBackend.MATH]
-    return _sdpa_kernel(backends)
-
-
-@pytest.fixture(autouse=True)
-def patch_sdpa_for_tests(monkeypatch):
-    """Allow MATH backend fallback in tests so models run without Flash Attention."""
-    monkeypatch.setattr(
-        "cell_observatory_platform.models.layers.attention.sdpa_kernel",
-        _sdpa_kernel_with_math_fallback,
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-benchmarks",
+        action="store_true",
+        default=False,
+        help="run tests marked benchmark",
     )
+    parser.addoption(
+        "--run-localdb",
+        action="store_true",
+        default=False,
+        help="run tests marked localdb",
+    )
+
+
+def _has_cuda_toolkit() -> bool:
+    # Tests marked `cuda` need the CUDA *toolkit* (nvcc), not just the runtime
+    # libs. DeepSpeed's `installed_cuda_version()` probe (which fires at
+    # module-import time inside several training modules) requires BOTH a
+    # callable nvcc AND `CUDA_HOME`/`CUDA_PATH` set, so we mirror that here.
+    nvcc = shutil.which("nvcc")
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if not nvcc and cuda_home:
+        candidate = os.path.join(cuda_home, "bin", "nvcc")
+        if os.access(candidate, os.X_OK):
+            nvcc = candidate
+    if not nvcc:
+        return False
+    if not cuda_home:
+        # nvcc found on PATH but no CUDA_HOME set — DeepSpeed will still fail
+        # at import. Treat as "no toolkit" so file-gated tests are skipped.
+        return False
+    return True
+
+
+# Module-level DeepSpeed imports inside these files trigger nvcc probing at
+# collection time, so we have to skip them earlier than markers can fire.
+# Currently empty: no test file imports DeepSpeed at module level any more
+# (test_jepa_models.py is CPU-only; test_loggers.py / test_test_trainer_predict_dispatch.py
+# were split so their Ray-harness import lives inside @pytest.mark.cuda tests).
+_CUDA_TOOLKIT_REQUIRED_FILES: tuple[str, ...] = ()
+
+
+def pytest_ignore_collect(collection_path, config):
+    if _has_cuda_toolkit():
+        return False
+    repo_root = Path(__file__).resolve().parent.parent
+    target = Path(collection_path).resolve()
+    for rel in _CUDA_TOOLKIT_REQUIRED_FILES:
+        if target == (repo_root / rel).resolve():
+            return True
+    return False
+
+
+def pytest_collection_modifyitems(config, items):
+    has_cuda_toolkit = _has_cuda_toolkit()
+    run_localdb = config.getoption("--run-localdb")
+    run_benchmarks = config.getoption("--run-benchmarks")
+
+    skip_cuda = pytest.mark.skip(reason="CUDA toolkit (nvcc) not available")
+    skip_localdb = pytest.mark.skip(reason="need --run-localdb to execute localdb tests")
+    # The `benchmark` marker documents itself as opt-in, but a marker alone only
+    # enables `-m benchmark` SELECTION -- it does not deselect. These spin up Ray
+    # actors over SHM buffers and measure the machine rather than the code.
+    skip_benchmark = pytest.mark.skip(reason="need --run-benchmarks to execute benchmark tests")
+
+    for item in items:
+        if not has_cuda_toolkit and "cuda" in item.keywords:
+            item.add_marker(skip_cuda)
+        if not run_localdb and "localdb" in item.keywords:
+            item.add_marker(skip_localdb)
+        if not run_benchmarks and "benchmark" in item.keywords:
+            item.add_marker(skip_benchmark)
+
+
+# (removed: every live sdpa_kernel([...]) call in models/layers/attention.py
+#  already lists SDPBackend.MATH; the autouse patch_sdpa_for_tests fixture only
+#  forced the attention stack to import for every test, data tests included.)
+
+
+def free_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture()
+def gloo_pg(monkeypatch):
+    import torch.distributed as dist
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
+    monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
+    monkeypatch.setenv("MASTER_PORT", str(free_tcp_port()))
+    dist.init_process_group("gloo", rank=0, world_size=1)
+    yield
+    dist.destroy_process_group()
 
 
 @pytest.fixture(autouse=True)
 def _reset_ray_and_cuda_before_test():
     yield
-    # Teardown: run after each test to leave a clean slate for the next
     if ray.is_initialized():
         try:
             ray.shutdown()
         except Exception:
             pass
-        time.sleep(2)
+    # No sleep: ray.shutdown() is synchronous, and distributed_test() already does its
+    # own shutdown + sleep(3) + unlink_shared_memory() in its `finally`.
+    # tests/inference/conftest.py still overrides this fixture for its session cluster.
     try:
         import torch
         if torch.cuda.is_available():
@@ -86,38 +157,14 @@ def _reset_ray_and_cuda_before_test():
 # tests to config setup
 @pytest.fixture(scope="session")
 def models_kargs():
-    repo = Path(__file__).resolve().parent.parent
-    models_kargs = dict(
-        repo=repo,
-        outdir=repo / "pretrained_models",
-        modes=15,
-        batch_size=2,
-        hidden_size=768,
-        patches=32,
-        heads=16,
-        repeats=4,
-        opt="lamb",
-        lr=5e-4,
-        wd=5e-5,
-        ld=None,
-        ema=(0.998, 1.0),
-        epochs=5,
-        warmup=1,
-        cooldown=1,
-        clip_grad=0.5,
-        fixedlr=False,
-        dropout=0.1,
-        fixed_dropout_depth=False,
-        amp="fp16",
-        finetune=None,
-        profile=False,
-        workers=1,
-        gpu_workers=1,
-        cpu_workers=8,
-        abs_sincos_enc=True,
-        rope_pos_enc=False,
+    # Only the keys read by tests/models/test_{convnext,jepa,mae,vit}_models.py
+    # (git grep 'models_kargs\['); delete the fixture outright if the models-area
+    # rewrite of those four files stops consuming it.
+    return dict(
+        outdir=Path(__file__).resolve().parent.parent / "pretrained_models",
+        modes=15, batch_size=2, hidden_size=768, patches=32, heads=16, repeats=4,
+        dropout=0.1, fixed_dropout_depth=False, abs_sincos_enc=True, rope_pos_enc=False,
     )
-    return models_kargs
 
 
 @pytest.fixture(scope="session")
@@ -146,6 +193,10 @@ def config() -> DictConfig:
         [print(f"\t{k}: {v}") for k, v in container_info["container_details"].items()]
 
         for k in ["outdir", "ray_script", "runner_script", "dotenv_path"]:
+            if cfg.paths[k] is None:
+                cfg.paths[k] = None
+                logger.warning(f"Path {k} is not set in the config, skipping")
+                continue
             cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
 
     # TODO need to look into why the abc cluster only works with the cursor protocol
@@ -159,9 +210,6 @@ def config() -> DictConfig:
     #     f"Missing dotenv path: {cfg.paths.dotenv_path}"
     load_dotenv(cfg.paths.dotenv_path, verbose=True)
 
-    # print full configuration (for debugging)
-    print("\n" + OmegaConf.to_yaml(cfg))
-
     return cfg
 
 
@@ -173,8 +221,8 @@ def _cleanup_ray_test_actors():
     except Exception:
         return
     for entry in actors:
-        ns = entry.get("namespace") or entry.get("namespace", "")
-        name = entry.get("name") or entry.get("name", "")
+        ns = entry.get("namespace") or ""
+        name = entry.get("name") or ""
         if not name:
             continue
 
@@ -202,14 +250,15 @@ def distributed_test(cfg: DictConfig, test: str):
         env_vars={k: v for k, v in os.environ.items()}, working_dir=project_root, py_modules=[project_root]
     )
 
-    init(
-        log_to_driver=True,
-        runtime_env=runtime_env,
-        num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
-        num_gpus=cfg.clusters.total_gpus,
-        object_store_memory=cfg.clusters.object_store_memory,
-        ignore_reinit_error=True,
-    )
+    with local_cwd_for_ray_start():
+        init(
+            log_to_driver=True,
+            runtime_env=runtime_env,
+            num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
+            num_gpus=cfg.clusters.total_gpus,
+            object_store_memory=cfg.clusters.object_store_memory,
+            ignore_reinit_error=True,
+        )
 
     try:
         for resource, count in cluster_resources().items():

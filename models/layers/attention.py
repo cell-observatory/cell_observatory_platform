@@ -35,7 +35,6 @@ from cell_observatory_platform.models.layers.utils import (
     uncat_with_shapes,
 )
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -85,7 +84,7 @@ class Attention(nn.Module):
         k = self.k_norm(k)
 
         # Removed: SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):  # MATH fallback for fp32/CPU/debug paths
             x = F.scaled_dot_product_attention(
                 q,
                 k,
@@ -131,7 +130,7 @@ class Attention(nn.Module):
             v = v.view(B, L, -1, self.head_dim).transpose(1, 2)
             q = self.q_norm(q)
             k = self.k_norm(k)
-            with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):  # MATH fallback for fp32/CPU/debug paths
                 out = F.scaled_dot_product_attention(
                     q, k, v, dropout_p=self.att_drop.p if self.training else 0.0,
                 )
@@ -151,7 +150,12 @@ class LinearKMaskedBias(nn.Linear):
         o = self.out_features
         assert o % 3 == 0
         if self.bias is not None:
-            self.register_buffer("bias_mask", torch.full_like(self.bias, fill_value=math.nan))
+            # Default to the layer's purpose (zeroed K-bias in a fused qkv
+            # projection) instead of NaN: a NaN default poisons the forward for
+            # any model that never runs the external mask initializer.
+            bias_mask = torch.ones_like(self.bias)
+            bias_mask[o // 3 : 2 * o // 3] = 0
+            self.register_buffer("bias_mask", bias_mask)
 
     def forward(self, input: Tensor) -> Tensor:
         masked_bias = self.bias * self.bias_mask.to(self.bias.dtype) if self.bias is not None else None
@@ -165,9 +169,12 @@ class LinearMaskedBias(nn.Linear):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self.bias is not None:
+            # This layer is used as the K projection (zeroed-K bias is its
+            # purpose); default the mask to zeros instead of NaN, which poisoned
+            # the forward for any model that never overwrote it.
             self.register_buffer(
                 "bias_mask",
-                torch.full_like(self.bias, fill_value=math.nan),
+                torch.zeros_like(self.bias),
             )
 
     def forward(self, input: Tensor) -> Tensor:
@@ -350,6 +357,9 @@ class RopeAttention(nn.Module):
         self._rope_inited = True
 
     # FIXME: we do not adequately deal with slicing off register/class tokens in non-custom branches
+    #        (apply_rope_v1 rotates from token 0). DinoEncoder -- the only prefix-token
+    #        encoder -- now rejects non-custom rope_type at construction; implement v1
+    #        prefix slicing before lifting that guard.
     def compute_attention(self, q: Tensor, k: Tensor, v: Tensor, masks=None, pos_enc=None) -> Tensor:
         if not self._rope_inited and self.rope_type == "mixed":
             raise RuntimeError("RopeAttention.init_rope_parameters() must be called before forward.")
@@ -392,7 +402,7 @@ class RopeAttention(nn.Module):
 
         # priority: flash > efficient > math
         # TODO: consider adding back SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):  # MATH fallback for fp32/CPU/debug paths
             x = F.scaled_dot_product_attention(
                 q_rope,
                 k_rope,
@@ -599,7 +609,7 @@ class CrossAttention(nn.Module):
         k = self.k_norm(k)
 
         # REMOVED: SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):  # MATH fallback for fp32/CPU/debug paths
             out = F.scaled_dot_product_attention(
                 q,
                 k,
@@ -667,7 +677,7 @@ class RopeCrossAttention(RopeAttention):
         random_rotation_per_head: bool = True,
         rope_type: Literal["mixed", "axial", "custom"] = "axial",
         rope_theta: float = 10.0,
-        input_fmt: str = "TZXYC",
+        input_fmt: str = "TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
         device: str = "cuda",
@@ -741,7 +751,7 @@ class RopeCrossAttention(RopeAttention):
             raise ValueError("RopeCrossAttention does not support rope_type='custom' for cross-attention.")
 
         # REMOVED: SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):  # MATH fallback for fp32/CPU/debug paths
             x = F.scaled_dot_product_attention(
                 q_rope,
                 k_rope,
@@ -909,7 +919,24 @@ class FlashDeformAttn3D(nn.Module):
         """
         N, Len_q, _ = query.shape
         N, Len_in, _ = input_flatten.shape
-        assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1] * input_spatial_shapes[:, 2]).sum() == Len_in
+        # Host-side check only when it is free: coercing the product of a CUDA
+        # shapes tensor to bool forces a GPU->CPU sync per DA layer per step
+        # (~15/step for MaskDINO).
+        if not input_spatial_shapes.is_cuda:
+            assert (
+                input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1] * input_spatial_shapes[:, 2]
+            ).sum() == Len_in
+        else:
+            # Free device-side equivalent (no GPU->CPU sync): traps before the
+            # kernel reads out-of-bounds on an inconsistent input_flatten.
+            torch._assert_async(
+                (
+                    input_spatial_shapes[:, 0]
+                    * input_spatial_shapes[:, 1]
+                    * input_spatial_shapes[:, 2]
+                ).sum() == Len_in,
+                "FlashDeformAttn3D: sum(spatial_shapes products) != Len_in",
+            )
 
         value = self.value_proj(input_flatten)
         if input_padding_mask is not None:
@@ -1322,9 +1349,9 @@ class TwoWayAttentionBlock(nn.Module):
         """
         super().__init__()
 
-        self.self_attn = CrossAttention(
-            embedding_dim, num_heads, downsample_rate=attention_downsample_rate
-        )
+        # Reference SAM: self-attention runs at FULL width (downsample_rate=1);
+        # only the token<->image cross-attention layers are downsampled.
+        self.self_attn = CrossAttention(embedding_dim, num_heads, downsample_rate=1)
         self.norm1 = nn.LayerNorm(embedding_dim)
 
         self.cross_attn_token_to_image = CrossAttention(
@@ -1439,10 +1466,12 @@ class MemoryAttentionLayer(nn.Module):
         pos,
         pos_enc=None,
         prefix_k: int = 0,
+        suffix_k: int = 0,
     ):
         kwds = {}
         if isinstance(self.cross_attn_image, RopeCrossAttention):
             kwds["prefix_k"] = prefix_k
+            kwds["suffix_k"] = suffix_k
             if pos_enc is not None:
                 kwds["pos_enc"] = pos_enc
 
@@ -1465,6 +1494,7 @@ class MemoryAttentionLayer(nn.Module):
         query_pos: Optional[Tensor] = None,
         pos_enc=None,
         prefix_k: int = 0,
+        suffix_k: int = 0,
     ) -> torch.Tensor:
 
         # Self-Attn, Cross-Attn
@@ -1473,6 +1503,7 @@ class MemoryAttentionLayer(nn.Module):
             tgt, memory, query_pos, pos,
             pos_enc=pos_enc,
             prefix_k=prefix_k,
+            suffix_k=suffix_k,
         )
         # MLP
         tgt2 = self.norm3(tgt)
@@ -1585,11 +1616,14 @@ class MemoryAttention(nn.Module):
             output = output + 0.1 * curr_pos
 
         if self.batch_first:
-            # Convert to batch first
+            # Convert to batch first (pos tensors are Optional — guard before
+            # transposing).
             output = output.transpose(0, 1)
-            curr_pos = curr_pos.transpose(0, 1)
+            if curr_pos is not None:
+                curr_pos = curr_pos.transpose(0, 1)
             memory = memory.transpose(0, 1)
-            memory_pos = memory_pos.transpose(0, 1)
+            if memory_pos is not None:
+                memory_pos = memory_pos.transpose(0, 1)
 
         # Seq dim is 1 in batch-first (B, L, C)
         num_k_content = memory.shape[1] - num_obj_ptr_tokens
@@ -1606,7 +1640,11 @@ class MemoryAttention(nn.Module):
 
         for layer in self.layers:
             kwds = {
-                "prefix_k": num_obj_ptr_tokens,
+                # Object-pointer tokens are appended LAST to the memory sequence
+                # (see num_k_content above), so they are excluded from RoPE as a
+                # SUFFIX. prefix_k here would RoPE the pointers and skip the
+                # first num_obj_ptr_tokens *content* tokens instead.
+                "suffix_k": num_obj_ptr_tokens,
             }
             if pos_enc is not None:
                 kwds["pos_enc"] = pos_enc
@@ -1621,9 +1659,11 @@ class MemoryAttention(nn.Module):
         normed_output = self.norm(output)
 
         if self.batch_first:
-            # Convert back to seq first
+            # Convert back to seq first. (The old unconditional
+            # `curr_pos = curr_pos.transpose(0, 1)` here was dead -- only
+            # normed_output is returned -- and crashed for curr_pos=None,
+            # unlike the None-guarded entry transpose.)
             normed_output = normed_output.transpose(0, 1)
-            curr_pos = curr_pos.transpose(0, 1)
 
         return normed_output
 
@@ -1676,10 +1716,15 @@ class MaskUnitAttention(nn.Module):
             (N // (self.q_stride * self.window_size)) if self.use_mask_unit_attn else 1
         )
 
+        # Unroll layout: the window (mask-unit) index is the FASTEST axis of the
+        # token dim (n = intra_window_offset * num_windows + window_index), so
+        # the window split is [B, tokens_per_window, num_windows] — matching
+        # reference Hiera. The previous window-SLOW reshape built "windows" out
+        # of one token from each of num_windows different mask units.
         qkv = (
             self.qkv(x)
-            .reshape(B, num_windows, -1, 3, self.heads, self.head_dim) # [B, num_windows, *spatial, 3, heads, head_dim]
-            .permute(3, 0, 4, 1, 2, 5) # [3, B, heads, num_windows, *spatial, head_dim]
+            .reshape(B, -1, num_windows, 3, self.heads, self.head_dim) # [B, *spatial, num_windows, 3, heads, head_dim]
+            .permute(3, 0, 4, 2, 1, 5) # [3, B, heads, num_windows, *spatial, head_dim]
         )
         q, k, v = qkv[0], qkv[1], qkv[2]
 
@@ -1701,14 +1746,16 @@ class MaskUnitAttention(nn.Module):
         k_ = k.permute(0, 2, 1, 3, 4).reshape(B * W, H, Lk, Dh) # [B * W, H, Lk, Dh]
         v_ = v.permute(0, 2, 1, 3, 4).reshape(B * W, H, Lk, Dh) # [B * W, H, Lk, Dh]
 
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):  # MATH fallback for fp32/CPU/debug paths
             out_ = F.scaled_dot_product_attention(q_, k_, v_)
 
         # Un-merge back to [B, H, W, Lq, Dh]
         out = out_.reshape(B, W, H, Lq, Dh).permute(0, 2, 1, 3, 4)
         x = out
 
-        # [B, H, W, Lq, Dh] -> [B, W, Lq, H, Dh] for (W, Lq) token order
-        x = x.permute(0, 2, 3, 1, 4).reshape(B, -1, self.dim_out)
+        # [B, H, W, Lq, Dh] -> [B, Lq, W, H, Dh]: the inverse of the window
+        # split above must put the window axis back as the FASTEST token axis
+        # (reference Hiera's `x.transpose(1, 3)`), i.e. (Lq, W) order.
+        x = x.permute(0, 3, 2, 1, 4).reshape(B, -1, self.dim_out)
         x = self.proj(x)
         return x

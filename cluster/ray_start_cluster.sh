@@ -51,6 +51,7 @@ done
 
 _cleaned=0
 cleanup() {
+    (( _cleaned )) && return
     _cleaned=1
     echo "Running head node cleanup..."
     ray stop --force >/dev/null 2>&1 || true
@@ -67,6 +68,11 @@ trap 'cleanup; exit 143' TERM INT
 mkdir -p /tmp/ray
 cluster_address="$ip:$port"
 
+: "${SUPABASE_LOCAL_PORT:?SUPABASE_LOCAL_PORT must be set in the environment}"
+: "${NODE_LOCAL_STORE_ROOT:?NODE_LOCAL_STORE_ROOT must be set in the environment}"
+
+mkdir -p "$NODE_LOCAL_STORE_ROOT"
+
 pick_agent_port() {
     local p=$((dashboard_port + 1))
     # if port lands inside the worker range, bump it out
@@ -76,6 +82,8 @@ pick_agent_port() {
     echo "$p"
 }
 DASHBOARD_AGENT_PORT=$(pick_agent_port)
+
+############################## START RAY
 
 # remove any leftover shared memory segments
 python3 /workspace/cell_observatory_platform/utils/cleanup.py

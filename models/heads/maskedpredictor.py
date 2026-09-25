@@ -11,9 +11,9 @@ from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.backbones.encoder import Encoder
 from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding, make_axial_rope_freqs
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -265,15 +265,23 @@ class MaskedPredictor(nn.Module):
         target_masks=None, 
         patches_used=None, 
         spatial_kwargs: Optional[dict] = None,
+        output_masks: Optional[torch.Tensor] = None,
     ):
+        """``output_masks`` ([B, M] token indices into the decoder sequence): when
+        given, only those rows go through the (per-token) norm + output projection,
+        i.e. the result equals ``apply_masks(self(...), output_masks)`` without
+        projecting the full sequence."""
         batch_size = inputs.shape[0]
 
         tokens = self.patch_projection(inputs)
         if target_masks is not None:
             mask_tokens = self.token_param.repeat(batch_size, target_masks.shape[1], 1)
             patches = torch.cat([tokens, mask_tokens], dim=1)
+            index = original_patch_indices.unsqueeze(-1)
+            if index.dim() == 2:
+                index = index.unsqueeze(0)
             patches = torch.gather(
-                patches, dim=1, index=original_patch_indices.unsqueeze(-1).repeat(1, 1, self.embed_dim)
+                patches, dim=1, index=index.expand(-1, -1, self.embed_dim)
             )  # reorder patches to original order
         else:
             patches = tokens
@@ -284,6 +292,8 @@ class MaskedPredictor(nn.Module):
             x = patches
 
         x = self.encoder(x, masks=patches_used, pos_enc=self.freqs_cis, spatial_kwargs=spatial_kwargs)
+        if output_masks is not None:
+            x = apply_masks(x, output_masks)
         x = self.norm(x)
         x = self.output_projection(x)
         return x
@@ -304,7 +314,7 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
 
     sig = inspect.signature(MaskedPredictor.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -314,6 +324,10 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("head", "mae_decoder")
 def BUILD(cfg: Mapping[str, Any]) -> MaskedPredictor:
     """
     Hydra entrypoint for MaskedPredictor.

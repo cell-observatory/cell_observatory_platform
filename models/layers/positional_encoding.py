@@ -13,7 +13,6 @@ import torch.nn.functional as F
 from cell_observatory_platform.models.layers import patch_embeddings
 from cell_observatory_platform.training.helpers import get_patch_sizes
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -196,6 +195,16 @@ class PosEmbedding(nn.Module):
         self.channels = channels
         self.cls_token = cls_token
         assert not self.cls_token, "CLS token not yet supported for PosEmbedding"
+        # interpolate_positional_encoding requires GRID-format input (B, *spatial, C),
+        # but every in-model caller passes SEQUENCE format (B, N, C) -> the reshape
+        # would be silently wrong (see FIXME in forward). Reject at construction
+        # until a grid-format entry point exists. (raise, not assert: survives -O)
+        if interpolate:
+            raise NotImplementedError(
+                "PosEmbedding(interpolate=True) is not supported from module configs: "
+                "callers pass sequence-format (B, N, C) but interpolation needs grid "
+                "format (B, *spatial, C). Enable only once callers reshape to grid first."
+            )
         self.interpolate = interpolate
 
         self.num_patches, self.token_shape = patch_embeddings.calc_num_patches(
@@ -388,8 +397,13 @@ class PosEmbedding(nn.Module):
 
     def forward(self, x: Optional[torch.Tensor] = None, patches_used: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self.interpolate:
-            # FIXME: interpolate_positional_encoding assumes x is grid format
-            #        but currently we pass in sequence format from modules
+            # NOTE: interpolate_positional_encoding assumes x is GRID format
+            #       (B, *spatial, C) — correct when called that way (covered by
+            #       test_positional_encodings interp tests, which call the method
+            #       directly) — but in-model callers pass SEQUENCE format (B, N, C),
+            #       so interpolate=True is REJECTED at construction. This branch is
+            #       unreachable today; it documents the intended grid-format path
+            #       for when callers reshape to grid first.
             pos_table_interpolated = self.interpolate_positional_encoding(x, self.pos_embed)
 
             if patches_used is not None:
@@ -478,10 +492,9 @@ class PositionalEmbeddingSinCos(nn.Module):
             pos_d = d_embed[:, :, None] / dim_t
             pos_d = torch.stack((pos_d[:, :, 0::2].sin(), pos_d[:, :, 1::2].cos()), dim=3).flatten(-2)
 
-            pos = torch.cat((pos_z, pos_y, pos_x, pos_w, pos_h, pos_d), dim=2)
-            # TODO: decide on alternative order of dimensions
-            # pos = torch.cat((pos_z, pos_y, pos_x, pos_d, pos_h, pos_w), dim=2)
-            # pos = torch.cat((pos_x, pos_y, pos_z, pos_w, pos_h, pos_d), dim=2)
+            # axis-wise pairing: block k (coord) and block k+3 (size) describe
+            # the same axis -- z<->d (depth), y<->h (height), x<->w (width)
+            pos = torch.cat((pos_z, pos_y, pos_x, pos_d, pos_h, pos_w), dim=2)
 
             remainder = 6 * F - 6 * Fe
             if remainder > 0:
@@ -943,6 +956,11 @@ def compute_axial_cis(
         freqs_z = torch.outer(t_z, mag)
         freqs_t = torch.outer(t_t, mag)
 
+    else:
+        # Without this, an unsupported layout falls through to a confusing
+        # NameError on freqs_x below.
+        raise ValueError(f"compute_axial_cis: unsupported input_fmt {input_fmt!r}")
+
     freqs_cis_x = torch.polar(torch.ones_like(freqs_x), freqs_x)
     freqs_cis_y = torch.polar(torch.ones_like(freqs_y), freqs_y)
 
@@ -989,11 +1007,13 @@ def apply_rope(
     pos_enc: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
     rope_type: Literal["mixed", "axial", "custom"],
 ):
-    # FIXME: remove inefficient recursive call
     if isinstance(pos_enc, (tuple, list)) and len(pos_enc) == 2:
+        # Per-side encodings: rotate each side ONCE with its own encoding. (The old
+        # recursive form ran the full q+k rotation twice and discarded half each
+        # time -- numerically identical, 2x the work; hot in SAM2 MemoryAttention.)
         pos_enc_q, pos_enc_k = pos_enc
-        q_rope = xq if pos_enc_q is None else apply_rope(xq, xk, pos_enc_q, rope_type)[0]
-        k_rope = xk if pos_enc_k is None else apply_rope(xq, xk, pos_enc_k, rope_type)[1]
+        q_rope = xq if pos_enc_q is None else apply_rope_q_only(xq, pos_enc_q, rope_type)
+        k_rope = xk if pos_enc_k is None else apply_rope_k_only(xk, pos_enc_k, rope_type)
         return q_rope, k_rope
     if rope_type == "mixed":
         return apply_rope_v1(xq, xk, pos_enc)
@@ -1137,6 +1157,57 @@ def _apply_rope_v2_q_only(xq: torch.Tensor, rope: Tensor | Tuple[Tensor, Tensor]
     xq = apply_rope_half(xq[:, :, prefix:, :], sin, cos)
     xq = torch.cat((q_prefix, xq), dim=-2)
     return xq.to(dtype=q_dtype)
+
+
+def apply_rope_k_only(
+    xk: torch.Tensor,
+    pos_enc: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
+    rope_type: Literal["mixed", "axial", "custom"],
+) -> torch.Tensor:
+    """K-side twin of apply_rope_q_only: rotate only k, once. Used by apply_rope's
+    per-side (pos_enc_q, pos_enc_k) branch to avoid the discarded q rotation."""
+    if isinstance(pos_enc, (tuple, list)) and len(pos_enc) == 2:
+        _, pos_enc_k = pos_enc
+        if pos_enc_k is None:
+            return xk
+        return apply_rope_k_only(xk, pos_enc_k, rope_type)
+    if rope_type in ("mixed", "axial"):
+        return _apply_rope_v1_k_only(xk, pos_enc)
+    elif rope_type == "custom":
+        return _apply_rope_v2_k_only(xk, pos_enc)
+    else:
+        raise ValueError(f"Unknown rope type: {rope_type}")
+
+
+def _apply_rope_v1_k_only(xk: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
+    # mirror of _apply_rope_v1_q_only with xk
+    Jf = freqs_cis.shape[-1]
+    De = Jf * 2
+
+    xk_even = xk[..., :De]
+    xk_tail = xk[..., De:]
+
+    xk_ = torch.view_as_complex(xk_even.float().reshape(*xk_even.shape[:-1], -1, 2))
+    freqs_cis = reshape_for_broadcast(freqs_cis, xk_).to(xk_.device)
+    xk_rot = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+
+    if xk_tail.numel():
+        return torch.cat([xk_rot, xk_tail], dim=-1).type_as(xk)
+    return xk_rot.type_as(xk)
+
+
+def _apply_rope_v2_k_only(xk: torch.Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> torch.Tensor:
+    # mirror of _apply_rope_v2_q_only with xk (prefix tokens pass through unrotated)
+    k_dtype = xk.dtype
+    sin, cos = rope
+    xk = xk.to(dtype=sin.dtype)
+    N = xk.shape[-2]
+    prefix = N - sin.shape[-2]
+    assert prefix >= 0
+    k_prefix = xk[:, :, :prefix, :]
+    xk = apply_rope_half(xk[:, :, prefix:, :], sin, cos)
+    xk = torch.cat((k_prefix, xk), dim=-2)
+    return xk.to(dtype=k_dtype)
 
 
 # --- --- CUSTOM ROPE Class --- --
@@ -1454,13 +1525,18 @@ class PositionEmbeddingRandom(nn.Module):
         self, coords_input: torch.Tensor, image_size: Tuple[int, int]
     ) -> torch.Tensor:
         """Positionally encode points that are not normalized to [0,1]."""
-        coords = coords_input.clone()
         if self.input_fmt == "ZYXC" or (self.input_fmt == "TZYXC" and self.time_separable):
             assert len(image_size) == 3, "Image size must be (Z, Y, X)"
+            # Samplers/AMG emit prompt coordinates as (x, y, z); the dense image
+            # PE grid (see forward()) is built in (z, y, x). Each coordinate must
+            # be normalized by ITS OWN extent and then reordered to match the
+            # grid: normalizing before the reorder pairs x with Z and embeds
+            # every prompt at a transposed location.
             Z, Y, X = image_size
-            coords[:, :, 0] = coords[:, :, 0] / Z
-            coords[:, :, 1] = coords[:, :, 1] / Y
-            coords[:, :, 2] = coords[:, :, 2] / X
+            x = coords_input[:, :, 0] / X
+            y = coords_input[:, :, 1] / Y
+            z = coords_input[:, :, 2] / Z
+            coords = torch.stack([z, y, x], dim=-1)
         else:
             raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
         return self._pe_encoding(coords.to(torch.float))  # B x N x C

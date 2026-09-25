@@ -1,92 +1,92 @@
-import sys
-from pathlib import Path
-import tempfile
+"""Unit tests for utils/context.py: rank/world-size fallbacks outside any
+process group, the single-rank reducer shared by loggers/hooks/evaluators,
+gather_and_reduce on a gloo world of one, and inference_context mode
+restoration. CPU-only."""
+
 import pytest
 import torch
-from omegaconf import open_dict
+import torch.distributed as dist
 
-from cell_observatory_platform.tests.conftest import config, distributed_test
-from cell_observatory_platform.utils.context import is_main_process
+from cell_observatory_platform.utils.context import (
+    barrier,
+    gather_and_reduce,
+    get_local_world_size,
+    get_world_size,
+    inference_context,
+    is_main_process,
+    local_rank,
+    process_rank,
+    reduce_values,
+)
 
 
-def _test_context(config):
-    import math
+@pytest.fixture()
+def no_process_group():
+    if dist.is_initialized():
+        dist.destroy_process_group()
+    yield
 
-    import torch
-    from ray.train import report, Checkpoint
 
-    from cell_observatory_platform.utils.context import (
-        OpMap,
-        barrier,
-        gather_and_reduce,
-        get_world_size,
-        inference_context,
-        process_rank,
-    )
+def test_single_process_rank_and_world_size(no_process_group):
+    """Outside Ray Train and torch.distributed the helpers describe a single
+    main process and barrier is a no-op."""
+    assert get_world_size() == 1 and get_local_world_size() == 1
+    assert process_rank() == 0 and local_rank() == 0
+    assert is_main_process() is True
+    assert barrier() is None
 
-    # basic sanity — OpMap values equal torch.distributed enums
-    assert OpMap.SUM.value == torch.distributed.ReduceOp.SUM
-    assert OpMap.MAX.value == torch.distributed.ReduceOp.MAX
-    assert OpMap.MIN.value == torch.distributed.ReduceOp.MIN
-    assert OpMap.MEAN.value == torch.distributed.ReduceOp.SUM
 
-    # ranks and world size under Ray
-    rank = process_rank()
-    world = get_world_size()
-    
-    assert 0 <= rank < world
-    assert world > 1
+def test_gather_and_reduce_without_process_group_returns_independent_clone(no_process_group):
+    """Without a process group the input is returned as an independent clone;
+    the caller's tensor is never aliased or mutated."""
+    t = torch.tensor([1.0, 2.0])
+    out = gather_and_reduce(t, "sum")
+    assert out is not t and torch.equal(out, t)
+    out += 1
+    assert torch.equal(t, torch.tensor([1.0, 2.0]))
 
-    # barrier must not dead-lock / raise
-    barrier()
 
-    # gather_and_reduce: SUM & MEAN
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    t = torch.tensor(float(rank + 1), device=device)
+@pytest.mark.parametrize("op", ["sum", "mean", "max", "min", "median", "MEAN"])
+def test_gather_and_reduce_world_one_all_ops_are_identity(gloo_pg, op):
+    """On a world of one every supported op (case-insensitive) reduces to the
+    input itself, through the real all_reduce / all_gather branches."""
+    t = torch.tensor([3.0, -1.0])
+    out = gather_and_reduce(t, op)
+    assert torch.equal(out, t) and out is not t
 
-    # SUM
-    tsum = gather_and_reduce(t.clone(), "sum")
-    expected_sum = sum(float(i + 1) for i in range(world))
-    assert math.isclose(tsum.item(), expected_sum, rel_tol=1e-6)
 
-    # MEAN
-    tmean = gather_and_reduce(t.clone(), "mean")
-    expected_mean = expected_sum / world
-    assert math.isclose(tmean.item(), expected_mean, rel_tol=1e-6)
+def test_gather_and_reduce_rejects_unknown_op(gloo_pg):
+    """An op outside the supported set raises rather than silently all-reducing."""
+    with pytest.raises(ValueError, match="Unsupported op"):
+        gather_and_reduce(torch.tensor(1.0), "variance")
 
-    # inference_context restores training flag
-    model = torch.nn.Linear(4, 4).to(device)
-    model.train()
-    assert model.training is True
 
+@pytest.mark.parametrize("op,values,expected", [
+    ("sum", [1.0, 2.0, 4.0], 7.0), ("mean", [1.0, 2.0, 6.0], 3.0),
+    ("median", [5.0, 1.0, 3.0], 3.0), ("median", [4.0, 1.0, 3.0, 2.0], 2.5),
+    ("max", [1.0, 9.0, 3.0], 9.0), ("min", [1.0, 9.0, -3.0], -3.0),
+    ("mean", [], 0.0), ("max", [], 0.0),
+])
+def test_reduce_values(op, values, expected):
+    """reduce_values implements sum/mean/median/max/min over a flat list and
+    returns 0.0 for empty input."""
+    assert reduce_values(op, values) == pytest.approx(expected)
+
+
+def test_reduce_values_rejects_unknown_method():
+    """An unknown reduce method raises."""
+    with pytest.raises(ValueError, match="Unknown reduce method"):
+        reduce_values("p95", [1.0])
+
+
+@pytest.mark.parametrize("was_training", [True, False])
+def test_inference_context_restores_previous_mode(was_training):
+    """inference_context puts the whole module tree into eval mode and restores
+    the previous mode (including children) on exit."""
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Dropout(0.5))
+    model.train(was_training)
     with inference_context(model):
         assert model.training is False
-    assert model.training is True
-
-    metrics = {"success": True}
-    with tempfile.TemporaryDirectory() as tmpdir:
-        checkpoint = Checkpoint.from_directory(tmpdir)
-        if is_main_process():
-            return report(metrics=metrics, checkpoint=checkpoint)
-        else:
-            return report(metrics=metrics, checkpoint=None)
-
-
-def test_context(config):
-    if not torch.cuda.is_available():
-        pytest.skip("No GPUs available for testing")
-    else:
-        n_gpus = torch.cuda.device_count()
-        if n_gpus < 2 or config.clusters.num_workers < 2:
-            pytest.skip("At least 2 GPUs are required for this test")
-
-    with open_dict(config):
-        config.experiment_name = "test_context"
-        config.paths.resume_checkpointdir = None
-
-        config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = 2
-        config.clusters.cpus_per_gpu = 4
-
-    metrics = distributed_test(cfg=config, test="cell_observatory_platform.tests.utils.test_context._test_context")
-    assert metrics.get("success", True), "Distributed context test failed"
+        assert all(not m.training for m in model.modules())
+    assert model.training is was_training
+    assert model[1].training is was_training

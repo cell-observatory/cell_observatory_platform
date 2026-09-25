@@ -1,240 +1,43 @@
-import logging
-
-logger = logging.getLogger(__name__)
-
-import shutil
-import warnings
-
-import pytest
-
-warnings.filterwarnings("ignore")
+import torch
 
 from cell_observatory_platform.models.meta_arch.jepa import JEPA
-from cell_observatory_platform.tests.conftest import models_kargs
-from cell_observatory_platform.training.helpers import get_masked_input_data, summarize_model
+from cell_observatory_platform.training.helpers import get_masked_input_data
 
 
-def test_jepa_custom(models_kargs):
-
-    # clean out existing model
-    outdir = models_kargs["outdir"] / "tests/jepa/custom"
-    if outdir.exists() and outdir.is_dir():
-        shutil.rmtree(outdir)
-
-    inputs = (1, 8, 64, 64, 64, 2)
-
-    logger.info(f"Output dir: {outdir}")
-    outdir.mkdir(exist_ok=True, parents=True)
-
-    logdir = outdir / "logs"
-    logdir.mkdir(exist_ok=True, parents=True)
-
+def test_jepa_forward_loss_and_prediction_shapes():
+    """The predictor output is gathered at the target patches and projected back to
+    embed_dim; the loss is a finite positive scalar that back-propagates into the
+    predictor, while the EMA target encoder is never trainable."""
+    torch.manual_seed(0)
+    inputs = (1, 16, 16, 16, 1)  # (B, Z, Y, X, C); get_masked_input_data builds B=1 masks
     model = JEPA(
-        model_template="jepa",
-        input_fmt="TZYXC",
-        embed_dim=models_kargs["hidden_size"],
+        input_fmt="ZYXC",
         input_shape=inputs[1:],
-        patch_shape=(1, 1, models_kargs["patches"], models_kargs["patches"]),
-        num_heads=models_kargs["heads"],
-        depth=models_kargs["repeats"],
-        modes=models_kargs["modes"],
-        abs_sincos_enc=models_kargs["abs_sincos_enc"],
-        rope_pos_enc=models_kargs["rope_pos_enc"],
-        proj_drop_rate=models_kargs["dropout"],
-        fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
-    ).to("cuda")
-
-    input_data = get_masked_input_data(model, inputs)
-
-    summarize_model(
-        model=model,
-        inputs=inputs,
-        input_data=input_data,
-        batch_size=models_kargs["batch_size"],
-        logdir=logdir,
+        patch_shape=(4, 4, 4, None),
+        embed_dim=16,
+        predictor_embed_dim=16,
+        depth=1,
+        predictor_depth=1,
+        num_heads=2,
+        predictor_num_heads=2,
+        drop_path_rate=0.0,
+        abs_sincos_enc=True,
+        rope_pos_enc=False,
+        dtype=torch.float32,
+        buffer_device="cpu",
     )
+    (data_sample,) = get_masked_input_data(model, inputs, device="cpu", mask_ratio=0.75)
+    n_patches = model.get_num_patches()            # 64
+    n_target = n_patches - int(n_patches * 0.25)   # patches the predictor must reconstruct
 
+    loss_dict, predictions = model(data_sample)
 
-def test_jepa_tiny(models_kargs):
-
-    # clean out existing model
-    outdir = models_kargs["outdir"] / "tests/jepa/tiny"
-    if outdir.exists() and outdir.is_dir():
-        shutil.rmtree(outdir)
-
-    inputs = (1, 8, 64, 64, 64, 2)
-
-    logger.info(f"Output dir: {outdir}")
-    outdir.mkdir(exist_ok=True, parents=True)
-
-    logdir = outdir / "logs"
-    logdir.mkdir(exist_ok=True, parents=True)
-
-    model = JEPA(
-        model_template="jepa-tiny",
-        input_fmt="TZYXC",
-        input_shape=inputs[1:],
-        patch_shape=(1, 1, models_kargs["patches"], models_kargs["patches"]),
-        proj_drop_rate=models_kargs["dropout"],
-        abs_sincos_enc=models_kargs["abs_sincos_enc"],
-        rope_pos_enc=models_kargs["rope_pos_enc"],
-        fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
-    ).to("cuda")
-
-    input_data = get_masked_input_data(model, inputs)
-
-    summarize_model(
-        model=model,
-        inputs=inputs,
-        input_data=input_data,
-        batch_size=models_kargs["batch_size"],
-        logdir=logdir,
-    )
-
-
-def test_jepa_small(models_kargs):
-
-    # clean out existing model
-    outdir = models_kargs["outdir"] / "tests/jepa/small"
-    if outdir.exists() and outdir.is_dir():
-        shutil.rmtree(outdir)
-
-    inputs = (1, 8, 64, 64, 64, 2)
-
-    logger.info(f"Output dir: {outdir}")
-    outdir.mkdir(exist_ok=True, parents=True)
-
-    logdir = outdir / "logs"
-    logdir.mkdir(exist_ok=True, parents=True)
-
-    model = JEPA(
-        model_template="jepa-small",
-        input_fmt="TZYXC",
-        input_shape=inputs[1:],
-        patch_shape=(1, 1, models_kargs["patches"], models_kargs["patches"]),
-        proj_drop_rate=models_kargs["dropout"],
-        abs_sincos_enc=models_kargs["abs_sincos_enc"],
-        rope_pos_enc=models_kargs["rope_pos_enc"],
-        fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
-    ).to("cuda")
-
-    input_data = get_masked_input_data(model, inputs)
-
-    summarize_model(
-        model=model,
-        inputs=inputs,
-        input_data=input_data,
-        batch_size=models_kargs["batch_size"],
-        logdir=logdir,
-    )
-
-
-def test_jepa_base(models_kargs):
-
-    # clean out existing model
-    outdir = models_kargs["outdir"] / "tests/jepa/base"
-    if outdir.exists() and outdir.is_dir():
-        shutil.rmtree(outdir)
-
-    inputs = (1, 8, 64, 64, 64, 2)
-
-    logger.info(f"Output dir: {outdir}")
-    outdir.mkdir(exist_ok=True, parents=True)
-
-    logdir = outdir / "logs"
-    logdir.mkdir(exist_ok=True, parents=True)
-
-    model = JEPA(
-        model_template="jepa-base",
-        input_fmt="TZYXC",
-        input_shape=inputs[1:],
-        patch_shape=(1, 1, models_kargs["patches"], models_kargs["patches"]),
-        proj_drop_rate=models_kargs["dropout"],
-        abs_sincos_enc=models_kargs["abs_sincos_enc"],
-        rope_pos_enc=models_kargs["rope_pos_enc"],
-        fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
-    ).to("cuda")
-
-    input_data = get_masked_input_data(model, inputs)
-
-    summarize_model(
-        model=model,
-        inputs=inputs,
-        input_data=input_data,
-        batch_size=models_kargs["batch_size"],
-        logdir=logdir,
-    )
-
-
-def test_jepa_large(models_kargs):
-
-    # clean out existing model
-    outdir = models_kargs["outdir"] / "tests/jepa/large"
-    if outdir.exists() and outdir.is_dir():
-        shutil.rmtree(outdir)
-
-    inputs = (1, 8, 64, 64, 64, 2)
-
-    logger.info(f"Output dir: {outdir}")
-    outdir.mkdir(exist_ok=True, parents=True)
-
-    logdir = outdir / "logs"
-    logdir.mkdir(exist_ok=True, parents=True)
-
-    model = JEPA(
-        model_template="jepa-large",
-        input_fmt="TZYXC",
-        input_shape=inputs[1:],
-        patch_shape=(1, 1, models_kargs["patches"], models_kargs["patches"]),
-        proj_drop_rate=models_kargs["dropout"],
-        abs_sincos_enc=models_kargs["abs_sincos_enc"],
-        rope_pos_enc=models_kargs["rope_pos_enc"],
-        fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
-    ).to("cuda")
-
-    input_data = get_masked_input_data(model, inputs)
-
-    summarize_model(
-        model=model,
-        inputs=inputs,
-        input_data=input_data,
-        batch_size=models_kargs["batch_size"],
-        logdir=logdir,
-    )
-
-
-def test_jepa_huge(models_kargs):
-
-    # clean out existing model
-    outdir = models_kargs["outdir"] / "tests/jepa/huge"
-    if outdir.exists() and outdir.is_dir():
-        shutil.rmtree(outdir)
-
-    inputs = (1, 8, 64, 64, 64, 2)
-
-    logger.info(f"Output dir: {outdir}")
-    outdir.mkdir(exist_ok=True, parents=True)
-
-    logdir = outdir / "logs"
-    logdir.mkdir(exist_ok=True, parents=True)
-
-    model = JEPA(
-        model_template="jepa-huge",
-        input_fmt="TZYXC",
-        input_shape=inputs[1:],
-        patch_shape=(1, 1, models_kargs["patches"], models_kargs["patches"]),
-        proj_drop_rate=models_kargs["dropout"],
-        abs_sincos_enc=models_kargs["abs_sincos_enc"],
-        rope_pos_enc=models_kargs["rope_pos_enc"],
-        fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
-    ).to("cuda")
-
-    input_data = get_masked_input_data(model, inputs)
-
-    summarize_model(
-        model=model,
-        inputs=inputs,
-        input_data=input_data,
-        batch_size=models_kargs["batch_size"],
-        logdir=logdir,
-    )
+    assert predictions.shape == (1, n_target, model.embed_dim)
+    assert torch.isfinite(predictions).all()
+    loss = loss_dict["step_loss"]
+    assert loss.ndim == 0 and torch.isfinite(loss) and loss.item() > 0.0
+    loss.backward()
+    grads = [p.grad for p in model.target_predictor.parameters() if p.requires_grad]
+    assert grads and all(g is not None and torch.isfinite(g).all() for g in grads)
+    # target encoder is an EMA copy, never trained
+    assert all(not p.requires_grad for p in model.target_encoder.parameters())

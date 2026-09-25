@@ -1,14 +1,14 @@
 import math
-import sys
 import inspect
 import logging
 from copy import deepcopy
-from typing import Any, Literal, Mapping, Optional, Union, List
+from typing import Any, Dict, Literal, Mapping, Optional, Union, List
 
 import torch
 import torch.nn as nn
-from deepspeed.runtime.zero import GatheredParameters
-from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+
+# NOTE: deepspeed is imported lazily inside ema_update() — a module-scope import
+# costs ~9s in every Ray actor that walk-imports the registry.
 
 from timm.layers.weight_init import trunc_normal_
 
@@ -21,121 +21,17 @@ from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.models.heads.maskedpredictor import MaskedPredictor
 from cell_observatory_platform.models.backbones.maskedencoder import MaskedEncoder
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.meta_arch import utils as mo
 from cell_observatory_platform.models.backbones.masked_hiera_encoder import MaskedHieraEncoder
 from cell_observatory_platform.models.heads.masked_hiera_predictor import MaskedHieraPredictor
 from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-
-CONFIGS = {
-    "jepa-tiny": {
-        "embed_dim": 192,
-        "predictor_embed_dim": 96,
-        "depth": 12,
-        "predictor_depth": 3,
-        "num_heads": 3, 
-        "predictor_num_heads": 3,
-        "mlp_ratio": 4,
-    },
-    "jepa-small": {
-        "embed_dim": 384,
-        "predictor_embed_dim": 192,
-        "depth": 12,
-        "predictor_depth": 6,
-        "num_heads": 6,
-        "predictor_num_heads": 6,
-        "mlp_ratio": 4,
-    },
-    "jepa-base": {
-        "embed_dim": 768,
-        "predictor_embed_dim": 384,
-        "depth": 12,
-        "predictor_depth": 12,
-        "num_heads": 12,
-        "predictor_num_heads": 12,
-        "mlp_ratio": 4,
-    },
-    "jepa-large": {
-        "embed_dim": 1024,
-        "predictor_embed_dim": 384,
-        "depth": 24,
-        "predictor_depth": 12,
-        "num_heads": 16,
-        "predictor_num_heads": 12,
-        "mlp_ratio": 4,
-    },
-    "jepa-huge": {
-        "embed_dim": 1280,
-        "predictor_embed_dim": 384,
-        "depth": 32,
-        "predictor_depth": 12,
-        "num_heads": 16,
-        "predictor_num_heads": 12,
-        "mlp_ratio": 4,
-    },
-    "jepa-2billion": {
-        "embed_dim": 2560,
-        "predictor_embed_dim": 512,
-        "depth": 24,
-        "predictor_depth": 8,
-        "num_heads": 32,
-        "predictor_num_heads": 8,
-        "mlp_ratio": 4,
-    },
-    "jepa-6billion": {
-        "embed_dim": 4096,
-        "predictor_embed_dim": 512,
-        "depth": 32,
-        "predictor_depth": 8,
-        "num_heads": 32,
-        "predictor_num_heads": 8,
-        "mlp_ratio": 4,
-    },
-    "jepa-giant": {
-        "embed_dim": 1408,
-        "predictor_embed_dim": 512,
-        "depth": 40,
-        "predictor_depth": 12,
-        "num_heads": 16,
-        "predictor_num_heads": 12,
-        "mlp_ratio": 48 / 11,
-    },
-    "jepa-gigantic": {
-        "embed_dim": 1664,
-        "predictor_embed_dim": 1024,
-        "depth": 48,
-        "predictor_depth": 16,
-        "num_heads": 16,
-        "predictor_num_heads": 16,
-        "mlp_ratio": 64 / 13,
-    },
-    "jepa-enormous": {
-        "embed_dim": 1792,
-        "predictor_embed_dim": 1024,
-        "depth": 56,
-        "predictor_depth": 16,
-        "num_heads": 16,
-        "predictor_num_heads": 16,
-        "mlp_ratio": 8.5714285714,
-    },
-}
 
 
 class JEPA(nn.Module):
     def __init__(
         self,
-        model_template: Literal[
-            "jepa",  # custom use `embed_dim`, `predictor_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
-            "jepa-tiny",
-            "jepa-small",
-            "jepa-base",
-            "jepa-large",
-            "jepa-huge",
-            "jepa-giant",
-            "jepa-gigantic",
-        ] = "jepa",
         input_fmt="TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
@@ -166,7 +62,9 @@ class JEPA(nn.Module):
         backbone_type: Literal["vit", "hiera"] = "vit",
         # Hiera-specific parameters
         hiera_q_pool: int = 3,
-        hiera_q_stride: tuple = (2, 2),
+        # int default expands to the token-grid rank inside Hiera; the old
+        # rank-2 tuple default zip-truncated against 3-D/4-D grids.
+        hiera_q_stride: Union[tuple, int] = 2,
         hiera_stages: tuple = (2, 3, 16, 3),
         hiera_mask_unit_size: Optional[tuple] = None,
         buffer_device: str = "cuda",
@@ -179,30 +77,31 @@ class JEPA(nn.Module):
         multiscale_out_dim: Optional[int] = None,
         multiscale_level_indices: Optional[List[int]] = None,
         target_only_predictor: bool = False,
+        output_metadata: Dict[str, Any] = None,
+        # how the C signal channels enter the ViT encoders (input AND target):
+        # see models/backbones/maskedencoder.py / configs/models/backbones/masked_encoder/large.yaml
+        patch_embed_type: Literal["joint", "channel_adaptive"] = "joint",
+        patch_embed_args: Optional[Mapping[str, Any]] = None,
         **kwargs,
     ):
         super().__init__()
 
-        if model_template in CONFIGS.keys():
-            config = CONFIGS[model_template]
-            self.depth = config["depth"]
-            self.predictor_depth = config["predictor_depth"]
-            self.embed_dim = config["embed_dim"]
-            self.predictor_embed_dim = config["predictor_embed_dim"]
-            self.num_heads = config["num_heads"]
-            self.predictor_num_heads = config["predictor_num_heads"]
-            self.mlp_ratio = config["mlp_ratio"]
-        else:
-            self.depth = depth
-            self.predictor_depth = predictor_depth
-            self.embed_dim = embed_dim
-            self.predictor_embed_dim = predictor_embed_dim
-            self.num_heads = num_heads
-            self.predictor_num_heads = predictor_num_heads
-            self.mlp_ratio = mlp_ratio
+        self.patch_embed_type = patch_embed_type
+        self.depth = depth
+        self.predictor_depth = predictor_depth
+        self.embed_dim = embed_dim
+        self.predictor_embed_dim = predictor_embed_dim
+        self.num_heads = num_heads
+        self.predictor_num_heads = predictor_num_heads
+        self.mlp_ratio = mlp_ratio
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
+        # Inference contract: inference_step returns full-context per-patch token
+        # FEATURES (not saved; VLM/downstream). Lazy-built in get_output_metadata()
+        # (needs the encoder); a config may override by passing output_metadata.
+        self._output_metadata_override = output_metadata
+        self.output_metadata = None
         axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
@@ -267,8 +166,15 @@ class JEPA(nn.Module):
                 rope_type=self.rope_type,
                 rope_theta=self.rope_theta,
                 mlp_wide_silu=mlp_wide_silu,
-                dtype=dtype
+                dtype=dtype,
+                patch_embed_type=patch_embed_type,
+                patch_embed_args=patch_embed_args,
             )
+            if self.input_encoder.tokens_per_patch != 1:
+                raise NotImplementedError(
+                    "JEPA masking indexes one token per patch; channel_fusion=concat "
+                    "emits C tokens per patch. Use channel_fusion=attn_pool."
+                )
             self.target_predictor = MaskedPredictor(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
@@ -300,6 +206,11 @@ class JEPA(nn.Module):
                 da_n_levels=1,
             )
         elif backbone_type == "hiera":
+            if patch_embed_type != "joint":
+                raise NotImplementedError(
+                    "patch_embed_type=channel_adaptive is a MaskedEncoder (vit) option; "
+                    "the Hiera backbone has its own patch embed"
+                )
             self.multiscale = multiscale
             self.target_only_predictor = target_only_predictor
             self.multiscale_level_indices = multiscale_level_indices
@@ -373,6 +284,26 @@ class JEPA(nn.Module):
 
     # see training/hooks.py for usage
     def ema_update(self, beta=0.99):
+        iparams = list(self.input_encoder.parameters())
+        if iparams and hasattr(iparams[0], "ds_id"):
+            # DeepSpeed ZeRO-partitioned parameters need a gather first
+            self._ema_update_deepspeed(beta)
+            return
+        # Plain tensors AND FSDP2-sharded DTensors: target_encoder is a
+        # deepcopy of input_encoder, so under fully_shard both hold DTensors
+        # with identical placements — lerp is pointwise and operates directly
+        # on the local shards, no gather needed.
+        with torch.no_grad():
+            for iparam, tparam in zip(iparams, self.target_encoder.parameters()):
+                # target_encoder*B + input_encoder*(1-B)
+                tparam.data.lerp_(iparam.data, 1.0 - beta)
+
+    def _ema_update_deepspeed(self, beta):
+        # lazy import: keeps deepspeed off the module-import path (Ray actors
+        # walk-import the registry and would pay ~9s per spawn otherwise)
+        from deepspeed.runtime.zero import GatheredParameters
+        from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+
         def collect_params(params):
             return [p for p in params if hasattr(p, "ds_id") and p.ds_status == ZeroParamStatus.NOT_AVAILABLE]
 
@@ -575,6 +506,21 @@ class JEPA(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
 
+    def _channel_ids(self, meta: dict) -> Optional[torch.Tensor]:
+        """``metainfo["channel_ids"]`` ([B, C, 2] token ids from the preprocessor's
+        channel_vocab lookup) for a channel-adaptive patch embed; ``None`` for the
+        joint embed (nothing to look up)."""
+        if getattr(self, "patch_embed_type", "joint") != "channel_adaptive":
+            return None
+        ids = (meta or {}).get("channel_ids")
+        if ids is None:
+            raise ValueError(
+                "patch_embed_type=channel_adaptive needs metainfo['channel_ids'] "
+                "([B, C, 2] localization/fluorophore token ids); the preprocessor emits "
+                "them from metainfo['channel_tokens'] when its channel_vocab is set"
+            )
+        return ids
+
     @staticmethod
     def _select_tokens(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         """
@@ -583,6 +529,18 @@ class JEPA(nn.Module):
         ->   [B, M, C]
         """
         return x.gather(1, idx.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        # Lazy-built (needs the encoder): declares the per-level token FEATURES that
+        # inference_step returns. A config-provided override wins.
+        if self.output_metadata is None:
+            self.output_metadata = (
+                self._output_metadata_override
+                if self._output_metadata_override is not None
+                else mo.output_metadata(**mo.build_feature_metadata(self, self.input_encoder))
+            )
+        return self.output_metadata
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
@@ -593,31 +551,54 @@ class JEPA(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
 
+    def evaluate_step(self, data_sample: dict) -> dict:
+        """EVAL — consumed by PretrainEvaluator (loss-only). Returns the loss dict;
+        metric keys (e.g. ``"step_loss"``) are read directly. The predictor payload
+        is dropped (unused by the metric; 'embeddings' was a divergent key)."""
+        loss_dict, _ = self.forward(data_sample)
+        return dict(loss_dict)
+
+    @torch.no_grad()
+    def inference_step(self, data_sample: dict) -> dict:
+        """INFERENCE — full-context per-patch token FEATURES (VLM/downstream); NOT saved.
+        No masking, no unpatchify, no raster un-window, no scatter -- flat [B, N, C]
+        per level (single for vit/single-scale hiera; every level for multiscale).
+        See :func:`meta_arch.utils.extract_token_features`."""
+        return mo.extract_token_features(self.input_encoder, self, data_sample)
+
     def _forward_vit(self, inputs: torch.Tensor, meta: dict):
         masks, spatial_kwargs = meta["masks"][0], meta.get("spatial_kwargs", None)
         context_masks, patches_used = meta["context_masks"][0], meta["patches_used"][0]
         target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
 
-        embedding, patches = self.input_encoder(
+        channel_ids = self._channel_ids(meta)
+        if patches_used is not None:
+            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
+        else:
+            target_idx_in_patches_used = target_masks
+
+        # JEPA never reads the raw pixel patches: return_patches=False keeps the
+        # [B, N, pixels_per_patch] copy out of both encoder passes.
+        embedding, _ = self.input_encoder(
             inputs, masks=context_masks, spatial_kwargs=spatial_kwargs,
+            channel_ids=channel_ids, return_patches=False,
         )
+        # per-token norm + output projection run on the target rows only
         predictions = self.target_predictor(
             embedding,
             original_patch_indices=original_patch_indices,
             target_masks=target_masks,
             patches_used=patches_used,
             spatial_kwargs=spatial_kwargs,
+            output_masks=target_idx_in_patches_used,
         )
 
         with torch.no_grad():
-            targets, _ = self.target_encoder(inputs, spatial_kwargs=spatial_kwargs)
+            targets, _ = self.target_encoder(
+                inputs, spatial_kwargs=spatial_kwargs, channel_ids=channel_ids, return_patches=False,
+            )
 
-        if patches_used is not None:
-            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
-        else:
-            target_idx_in_patches_used = target_masks
         targets = apply_masks(targets, masks=target_masks)
-        predictions = apply_masks(predictions, masks=target_idx_in_patches_used)
         loss, aux_losses = self.loss_fn(targets, predictions, masks.sum())
 
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
@@ -707,7 +688,7 @@ class JEPA(nn.Module):
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(JEPA.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     kwargs = {}
     for k in cfg.keys():
         if k in ignore or k not in allowed:
@@ -716,6 +697,107 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+@REGISTRY.register("model", "jepa")
 def BUILD(cfg: Mapping[str, Any]) -> JEPA:
     model_cfg = cfg.models.meta_arch.jepa
     return JEPA(**_extract_model_kwargs(model_cfg))
+
+# --------------------------------------------------------------------------- #
+# PARKED (planned return; do NOT delete): JEPA model-size CONFIGS table.
+# --------------------------------------------------------------------------- #
+# # (size table formerly selected via `model_template`; predictor dims disagreed
+# #  three ways with configs -- reconcile before reuse)
+# CONFIGS = {
+#     "jepa-tiny": {
+#         "embed_dim": 192,
+#         "predictor_embed_dim": 96,
+#         "depth": 12,
+#         "predictor_depth": 3,
+#         "num_heads": 3, 
+#         "predictor_num_heads": 3,
+#         "mlp_ratio": 4,
+#     },
+#     "jepa-small": {
+#         "embed_dim": 384,
+#         "predictor_embed_dim": 192,
+#         "depth": 12,
+#         "predictor_depth": 6,
+#         "num_heads": 6,
+#         "predictor_num_heads": 6,
+#         "mlp_ratio": 4,
+#     },
+#     "jepa-base": {
+#         "embed_dim": 768,
+#         "predictor_embed_dim": 384,
+#         "depth": 12,
+#         "predictor_depth": 12,
+#         "num_heads": 12,
+#         "predictor_num_heads": 12,
+#         "mlp_ratio": 4,
+#     },
+#     "jepa-large": {
+#         "embed_dim": 1024,
+#         "predictor_embed_dim": 384,
+#         "depth": 24,
+#         "predictor_depth": 12,
+#         "num_heads": 16,
+#         "predictor_num_heads": 12,
+#         "mlp_ratio": 4,
+#     },
+#     "jepa-huge": {
+#         "embed_dim": 1280,
+#         "predictor_embed_dim": 384,
+#         "depth": 32,
+#         "predictor_depth": 12,
+#         "num_heads": 16,
+#         "predictor_num_heads": 12,
+#         "mlp_ratio": 4,
+#     },
+#     "jepa-2billion": {
+#         "embed_dim": 2560,
+#         "predictor_embed_dim": 512,
+#         "depth": 24,
+#         "predictor_depth": 8,
+#         "num_heads": 32,
+#         "predictor_num_heads": 8,
+#         "mlp_ratio": 4,
+#     },
+#     "jepa-6billion": {
+#         "embed_dim": 4096,
+#         "predictor_embed_dim": 512,
+#         "depth": 32,
+#         "predictor_depth": 8,
+#         "num_heads": 32,
+#         "predictor_num_heads": 8,
+#         "mlp_ratio": 4,
+#     },
+#     "jepa-giant": {
+#         "embed_dim": 1408,
+#         "predictor_embed_dim": 512,
+#         "depth": 40,
+#         "predictor_depth": 12,
+#         "num_heads": 16,
+#         "predictor_num_heads": 12,
+#         "mlp_ratio": 48 / 11,
+#     },
+#     "jepa-gigantic": {
+#         "embed_dim": 1664,
+#         "predictor_embed_dim": 1024,
+#         "depth": 48,
+#         "predictor_depth": 16,
+#         "num_heads": 16,
+#         "predictor_num_heads": 16,
+#         "mlp_ratio": 64 / 13,
+#     },
+#     "jepa-enormous": {
+#         "embed_dim": 1792,
+#         "predictor_embed_dim": 1024,
+#         "depth": 56,
+#         "predictor_depth": 16,
+#         "num_heads": 16,
+#         "predictor_num_heads": 16,
+#         "mlp_ratio": 8.5714285714,
+#     },
+# }

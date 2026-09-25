@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - base_allreduce_spike
+  - _self_
+
+experiment_name: allreduce_spike_h200_02_sync_before_forward
+
+allreduce_spike:
+  sync_at: null
